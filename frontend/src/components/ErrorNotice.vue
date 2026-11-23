@@ -8,10 +8,11 @@ defineEmits<{ dismiss: [] }>()
 <template>
   <div class="error-notice" role="alert">
     <div>
-      <strong>本次请求失败</strong>
+      <strong>暂时无法完成操作</strong>
       <p>{{ error.message }}</p>
-      <code>{{ error.code }}</code>
     </div>
-    <button type="button" class="button ghost" @click="$emit('dismiss')">关闭</button>
+    <button type="button" class="button ghost small" @click="$emit('dismiss')">
+      关闭
+    </button>
   </div>
 </template>

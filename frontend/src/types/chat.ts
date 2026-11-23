@@ -5,6 +5,8 @@ export type SseEventName =
   | 'task_started'
   | 'node_started'
   | 'node_completed'
+  | 'intent_detected'
+  | 'content_delta'
   | 'assistant_message'
   | 'task_completed'
   | 'task_failed'
@@ -34,6 +36,9 @@ export interface ChatState {
   status: ChatStatus
   error: ChatError | null
   lastUserMessage: string
+  intent: string | null
+  activeAssistantId: string | null
+  profileUsed: boolean
 }
 
 export interface SseEvent {

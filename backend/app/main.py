@@ -9,7 +9,15 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api.routes import chat, conversations, health, meta
+from app.api.routes import (
+    chat,
+    conversations,
+    health,
+    market,
+    meta,
+    profile,
+    roadmap,
+)
 from app.core.config import get_settings
 from app.core.errors import AppError
 from app.core.logging import configure_logging, current_request_id, request_id_ctx
@@ -103,4 +111,7 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
 app.include_router(health.router)
 app.include_router(conversations.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
+app.include_router(profile.router, prefix="/api")
+app.include_router(market.router, prefix="/api")
+app.include_router(roadmap.router, prefix="/api")
 app.include_router(meta.router, prefix="/api")

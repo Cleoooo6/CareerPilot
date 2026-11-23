@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 from pydantic import BaseModel
@@ -163,3 +165,103 @@ def test_status_does_not_expose_key():
     assert status["mode"] == "real"
     assert status["api_key_configured"] is True
     assert "test-key" not in str(status)
+
+@pytest.mark.asyncio
+async def test_mock_stream_yields_text_without_usage_or_network():
+    settings = _settings(llm_mode="mock")
+    client = LLMClient(settings=settings)
+    chunks = [
+        chunk
+        async for chunk in client.astream_chat(
+            [{"role": "user", "content": "hi"}],
+            mock_text="你好，Mock",
+        )
+    ]
+    assert "".join(chunk.content for chunk in chunks) == "你好，Mock"
+    assert chunks[-1].finish_reason == "stop"
+    assert chunks[-1].usage.total_tokens is None
+
+
+@pytest.mark.asyncio
+async def test_real_stream_yields_deltas_and_usage():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.read())
+        body = (
+            'data: {"model":"glm-4.7-flash","choices":[{"delta":{"content":"你"},'
+            '"finish_reason":null}]}\n\n'
+            'data: {"model":"glm-4.7-flash","choices":[{"delta":{"content":"好"},'
+            '"finish_reason":"stop"}],"usage":{"prompt_tokens":2,'
+            '"completion_tokens":2,"total_tokens":4}}\n\n'
+            "data: [DONE]\n\n"
+        )
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=body.encode(),
+        )
+
+    async_http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = LLMClient(
+        settings=_settings(llm_max_retries=0),
+        async_http_client=async_http,
+    )
+    try:
+        chunks = [
+            chunk
+            async for chunk in client.astream_chat(
+                [{"role": "user", "content": "hi"}]
+            )
+        ]
+    finally:
+        await async_http.aclose()
+    assert captured["payload"]["stream"] is True
+    assert captured["payload"]["model"] == "glm-4.7-flash"
+    assert "".join(chunk.content for chunk in chunks) == "你好"
+    assert chunks[-1].finish_reason == "stop"
+    assert chunks[-1].usage.total_tokens == 4
+
+
+@pytest.mark.asyncio
+async def test_non_sse_response_is_not_silently_downgraded():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            json={"choices": [{"message": {"content": "一次性"}}]},
+        )
+
+    async_http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = LLMClient(
+        settings=_settings(llm_max_retries=0),
+        async_http_client=async_http,
+    )
+    try:
+        with pytest.raises(LLMNonRetryableError):
+            async for _ in client.astream_chat(
+                [{"role": "user", "content": "hi"}]
+            ):
+                pass
+    finally:
+        await async_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stream_rate_limit_stops_refuses_retry():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, headers={"Retry-After": "1"})
+
+    async_http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = LLMClient(
+        settings=_settings(llm_max_retries=0),
+        async_http_client=async_http,
+    )
+    try:
+        with pytest.raises(LLMRateLimitError):
+            async for _ in client.astream_chat(
+                [{"role": "user", "content": "hi"}]
+            ):
+                pass
+    finally:
+        await async_http.aclose()

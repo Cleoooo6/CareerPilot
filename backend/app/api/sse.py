@@ -9,6 +9,8 @@ SseEventName = Literal[
     "task_started",
     "node_started",
     "node_completed",
+    "intent_detected",
+    "content_delta",
     "assistant_message",
     "task_completed",
     "task_failed",

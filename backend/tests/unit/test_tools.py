@@ -5,11 +5,24 @@ from app.tools.mock import MockEchoArgs, MockEchoTool
 from app.tools.registry import ToolRegistry, build_default_registry
 
 
-def test_default_registry_has_only_mock_tool():
+def test_default_registry_has_market_roadmap_tools_and_mock():
     registry = build_default_registry()
-    assert registry.names == ("mock_echo",)
+    assert registry.names == (
+        "generate_roadmap_draft",
+        "get_career_market_requirements",
+        "get_market_insights",
+        "get_roadmap",
+        "get_skill_demand",
+        "get_skill_gap",
+        "mock_echo",
+    )
     definitions = registry.definitions()
-    assert definitions[0]["function"]["name"] == "mock_echo"
+    names = [item["function"]["name"] for item in definitions]
+    assert "mock_echo" in names
+    assert "get_market_insights" in names
+    assert "get_skill_gap" in names
+    assert "generate_roadmap_draft" in names
+    assert "confirm_roadmap" not in names
 
 
 def test_execute_mock_echo():

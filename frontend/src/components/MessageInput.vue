@@ -29,15 +29,15 @@ function onKeydown(event: KeyboardEvent) {
     <textarea
       v-model="draft"
       class="composer-input"
-      rows="3"
+      rows="2"
       maxlength="4000"
       :disabled="streaming"
-      placeholder="描述你的职业问题，例如：你好，我想了解这个平台当前能做什么？"
+      placeholder="说说你现在的方向、困惑或目标…"
       aria-label="消息输入框"
       @keydown="onKeydown"
     ></textarea>
     <div class="composer-actions">
-      <span class="composer-hint">Enter 发送 · Shift + Enter 换行 · 阶段一不调用真实模型</span>
+      <span class="composer-hint">Enter 发送 · Shift + Enter 换行</span>
       <div class="composer-buttons">
         <button
           v-if="streaming"

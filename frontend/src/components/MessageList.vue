@@ -2,9 +2,14 @@
 import { nextTick, onMounted, ref, watch } from 'vue'
 
 import type { ChatMessage } from '@/types/chat'
+import { userFacingText } from '@/utils/userFacing'
 
-const props = defineProps<{ messages: ChatMessage[] }>()
+const props = withDefaults(
+  defineProps<{ messages: ChatMessage[]; streaming?: boolean }>(),
+  { streaming: false },
+)
 const container = ref<HTMLElement | null>(null)
+const stickToBottom = ref(true)
 
 function formatTime(value: string): string {
   const date = new Date(value)
@@ -12,28 +17,64 @@ function formatTime(value: string): string {
   return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
-async function scrollToBottom() {
-  await nextTick()
-  if (container.value) container.value.scrollTop = container.value.scrollHeight
+function onScroll() {
+  const element = container.value
+  if (!element) return
+  stickToBottom.value =
+    element.scrollHeight - element.scrollTop - element.clientHeight < 80
 }
 
-watch(() => props.messages.length, scrollToBottom)
-onMounted(scrollToBottom)
+async function scrollToBottom(force = false) {
+  await nextTick()
+  const element = container.value
+  if (!element) return
+  if (force || stickToBottom.value) {
+    element.scrollTop = element.scrollHeight
+  }
+}
+
+watch(
+  () => props.messages.length,
+  () => {
+    const last = props.messages[props.messages.length - 1]
+    void scrollToBottom(last?.role === 'user')
+  },
+)
+watch(
+  () => props.messages[props.messages.length - 1]?.content,
+  () => {
+    void scrollToBottom()
+  },
+)
+onMounted(() => {
+  void scrollToBottom(true)
+})
 </script>
 
 <template>
-  <div ref="container" class="messages" aria-live="polite">
+  <div ref="container" class="messages" aria-live="polite" @scroll="onScroll">
     <article
-      v-for="message in messages"
+      v-for="(message, index) in messages"
       :key="message.id"
       class="message"
       :class="`message-${message.role}`"
     >
       <div class="message-meta">
-        <span>{{ message.role === 'user' ? '你' : 'CareerPilot' }}</span>
+        <span>{{ message.role === 'user' ? '你' : 'CareerPilot AI' }}</span>
         <time>{{ formatTime(message.createdAt) }}</time>
       </div>
-      <div class="message-body">{{ message.content }}</div>
+      <div class="message-body">
+        {{ userFacingText(message.content)
+        }}<span
+          v-if="
+            streaming &&
+            index === messages.length - 1 &&
+            message.role === 'assistant'
+          "
+          class="streaming-caret"
+          aria-hidden="true"
+        ></span>
+      </div>
     </article>
   </div>
 </template>

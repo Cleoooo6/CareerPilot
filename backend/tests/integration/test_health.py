@@ -38,9 +38,20 @@ def test_tools_are_registered_and_planned_separately(client):
     response = client.get("/api/tools")
     assert response.status_code == 200
     data = response.json()["data"]
-    assert [item["name"] for item in data["registered"]] == ["mock_echo"]
+    registered_names = [item["name"] for item in data["registered"]]
+    assert registered_names == [
+        "generate_roadmap_draft",
+        "get_career_market_requirements",
+        "get_market_insights",
+        "get_roadmap",
+        "get_skill_demand",
+        "get_skill_gap",
+        "mock_echo",
+    ]
     assert "get_user_profile" in data["planned"]
-    assert "get_user_profile" not in [item["name"] for item in data["registered"]]
+    assert "get_user_profile" not in registered_names
+    assert "confirm_roadmap" not in registered_names
+    assert "generate_roadmap_draft" in registered_names
 
 
 def test_openapi_contains_stage_one_paths(client):

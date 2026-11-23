@@ -35,6 +35,9 @@ export function initialChatState(): ChatState {
     status: 'idle',
     error: null,
     lastUserMessage: '',
+    intent: null,
+    activeAssistantId: null,
+    profileUsed: false,
   }
 }
 
@@ -67,6 +70,13 @@ export function reduceEvent(state: ChatState, event: SseEvent): ChatState {
     case 'task_started':
       next.status = 'streaming'
       next.error = null
+      next.intent = null
+      next.activeAssistantId = null
+      next.profileUsed = false
+      break
+    case 'intent_detected':
+      next.intent = String(event.data.intent ?? '') || null
+      next.profileUsed = Boolean(event.data.profile_used)
       break
     case 'node_started':
       next.timeline = upsertTimeline(
@@ -81,19 +91,56 @@ export function reduceEvent(state: ChatState, event: SseEvent): ChatState {
       next.timeline = upsertTimeline(next.timeline, node, status)
       break
     }
-    case 'assistant_message':
-      next.messages.push({
-        id: messageId(),
-        role: 'assistant',
-        content: String(event.data.content ?? ''),
-        createdAt: event.timestamp,
-      })
+    case 'content_delta': {
+      const chunk = String(event.data.content ?? '')
+      if (!chunk) break
+      if (!next.activeAssistantId) {
+        const id = messageId()
+        next.activeAssistantId = id
+        next.messages.push({
+          id,
+          role: 'assistant',
+          content: chunk,
+          createdAt: event.timestamp,
+        })
+      } else {
+        const activeId = next.activeAssistantId
+        next.messages = next.messages.map((message) =>
+          message.id === activeId
+            ? { ...message, content: message.content + chunk }
+            : message,
+        )
+      }
       break
+    }
+    case 'assistant_message': {
+      const content = String(event.data.content ?? '')
+      if (next.activeAssistantId) {
+        const activeId = next.activeAssistantId
+        next.messages = next.messages.map((message) =>
+          message.id === activeId ? { ...message, content } : message,
+        )
+      } else {
+        next.messages.push({
+          id: messageId(),
+          role: 'assistant',
+          content,
+          createdAt: event.timestamp,
+        })
+      }
+      next.activeAssistantId = null
+      break
+    }
     case 'task_completed':
       next.status = 'completed'
+      next.activeAssistantId = null
+      if (typeof event.data.profile_used === 'boolean') {
+        next.profileUsed = event.data.profile_used
+      }
       break
     case 'task_failed': {
       next.status = 'failed'
+      next.activeAssistantId = null
       const code = String(event.data.code ?? 'TASK_FAILED')
       const message = String(event.data.message ?? '执行失败，请稍后重试')
       next.error = { code, message }
@@ -168,6 +215,9 @@ async function send(content: string): Promise<void> {
   state.lastUserMessage = text
   state.error = null
   state.timeline = []
+  state.intent = null
+  state.activeAssistantId = null
+  state.profileUsed = false
   state.status = 'sending'
   state.messages.push({
     id: messageId(),
@@ -193,10 +243,7 @@ async function send(content: string): Promise<void> {
       signal: controller.signal,
       onEvent: (event) => {
         const next = reduceEvent(state, event)
-        state.messages = next.messages
-        state.timeline = next.timeline
-        state.status = next.status
-        state.error = next.error
+        Object.assign(state, next)
       },
     })
     if (state.status === 'streaming') state.status = 'completed'

@@ -43,6 +43,39 @@ async function readError(response: Response): Promise<ApiError> {
   return new ApiError(response.status, 'HTTP_ERROR', `请求失败（HTTP ${response.status}）`, detail)
 }
 
+export async function requestForm<T>(
+  path: string,
+  formData: FormData,
+  init: RequestInit = {},
+): Promise<T> {
+  let response: Response
+  try {
+    response = await fetch(path, {
+      method: 'POST',
+      ...init,
+      body: formData,
+    })
+  } catch (error) {
+    throw new ApiError(0, 'NETWORK_ERROR', '无法连接后端服务', error)
+  }
+  if (!response.ok) {
+    throw await readError(response)
+  }
+  const body = (await response.json()) as ApiEnvelope<T> | ApiErrorEnvelope
+  if (!body || body.ok !== true) {
+    if (body && 'error' in body) {
+      throw new ApiError(
+        response.status,
+        body.error.code,
+        body.error.message,
+        body.error.details,
+      )
+    }
+    throw new ApiError(response.status, 'INVALID_RESPONSE', '后端返回结构不合法')
+  }
+  return body.data
+}
+
 export async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   let response: Response
   try {

@@ -1,9 +1,8 @@
-"""消费 LangGraph 事件，产出节点执行记录。"""
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from app.agents.graph import NODE_NAMES
 from app.agents.state import CareerState
 from app.tracing.tracer import utcnow
 
@@ -18,39 +17,65 @@ class NodeExecution:
     error_type: str | None = None
 
 
+@dataclass
+class ContentDelta:
+    content: str
+
+
 class WorkflowRun:
     def __init__(self, graph, initial_state: CareerState) -> None:
         self.graph = graph
         self.final_state: dict[str, Any] = dict(initial_state)
-        self._started: dict[str, datetime] = {}
 
-    async def events(self):
-        async for event in self.graph.astream_events(self.final_state, version="v2"):
-            name = event.get("name")
-            kind = event.get("event")
-            if name not in NODE_NAMES:
+    async def events(self) -> AsyncIterator[NodeExecution | ContentDelta]:
+        async for stream_mode, chunk in self.graph.astream(
+            self.final_state,
+            stream_mode=["custom", "updates"],
+        ):
+            if stream_mode == "updates":
+                if isinstance(chunk, dict):
+                    for output in chunk.values():
+                        if isinstance(output, dict):
+                            self.final_state.update(output)
                 continue
-            if kind == "on_chain_start":
-                started = utcnow()
-                self._started[name] = started
+            if stream_mode != "custom" or not isinstance(chunk, dict):
+                continue
+
+            kind = chunk.get("type")
+            if kind == "content_delta":
+                content = str(chunk.get("content") or "")
+                if content:
+                    yield ContentDelta(content=content)
+                continue
+
+            node = str(chunk.get("node") or "")
+            if not node:
+                continue
+            started = _parse_datetime(chunk.get("started_at"))
+            finished = _parse_datetime(chunk.get("finished_at"))
+            if kind == "node_started":
                 yield NodeExecution(
-                    node=name,
+                    node=node,
                     status="started",
                     started_at=started,
                     finished_at=started,
                 )
-            elif kind == "on_chain_end":
-                output = (event.get("data") or {}).get("output")
-                if isinstance(output, dict):
-                    self.final_state.update(output)
-                started = self._started.get(name, utcnow())
-                finished = utcnow()
-                failed = isinstance(output, dict) and bool(output.get("error"))
+            elif kind == "node_completed":
+                payload = chunk.get("payload")
                 yield NodeExecution(
-                    node=name,
-                    status="failed" if failed else "completed",
+                    node=node,
+                    status=str(chunk.get("status") or "completed"),
                     started_at=started,
                     finished_at=finished,
-                    payload=output if isinstance(output, dict) else {},
-                    error_type=str(output.get("error")) if failed else None,
+                    payload=payload if isinstance(payload, dict) else {},
+                    error_type=chunk.get("error_type"),
                 )
+
+
+def _parse_datetime(value: Any) -> datetime:
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            pass
+    return utcnow()

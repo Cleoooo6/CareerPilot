@@ -17,7 +17,158 @@ def test_alembic_version_is_head(migrated_db):
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT version_num FROM alembic_version")
-            assert cur.fetchone()[0] == "0001_initial"
+            assert cur.fetchone()[0] == "0006_roadmap_concurrency"
+
+
+def test_stage_three_tables_exist(migrated_db):
+    expected = {"career_profile", "resume_parse", "profile_analysis"}
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'public'"
+            )
+            tables = {row[0] for row in cur.fetchall()}
+    assert expected.issubset(tables)
+
+
+def test_stage_four_market_tables_exist(migrated_db):
+    expected = {"market_source", "market_import_batch", "market_job"}
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'public'"
+            )
+            tables = {row[0] for row in cur.fetchall()}
+    assert expected.issubset(tables)
+
+
+def test_stage_four_market_job_columns(migrated_db):
+    required = {
+        "source_id",
+        "batch_id",
+        "external_id",
+        "title",
+        "company",
+        "location",
+        "skills",
+        "raw_payload",
+        "dedupe_hash",
+        "status",
+        "duplicate_of",
+        "posted_at",
+    }
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'market_job'"
+            )
+            columns = {row[0] for row in cur.fetchall()}
+    assert required.issubset(columns)
+
+
+def test_stage_four_point_five_profile_revision_table(migrated_db):
+    required = {
+        "id",
+        "user_id",
+        "profile_id",
+        "version",
+        "data",
+        "change_source",
+        "created_at",
+    }
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'profile_revision'"
+            )
+            columns = {row[0] for row in cur.fetchall()}
+    assert required.issubset(columns)
+
+
+def test_stage_five_roadmap_tables_exist(migrated_db):
+    expected = {"career_roadmap", "roadmap_stage", "roadmap_task"}
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'public'"
+            )
+            tables = {row[0] for row in cur.fetchall()}
+    assert expected.issubset(tables)
+
+
+def test_stage_five_roadmap_columns(migrated_db):
+    required = {
+        "career_roadmap": {
+            "user_id",
+            "target_role",
+            "status",
+            "version",
+            "gap_snapshot",
+            "generation_mode",
+            "provider",
+            "model",
+            "confirmed_at",
+        },
+        "roadmap_stage": {
+            "roadmap_id",
+            "position",
+            "title",
+            "goal",
+            "duration",
+            "priority",
+        },
+        "roadmap_task": {
+            "roadmap_id",
+            "stage_id",
+            "position",
+            "title",
+            "description",
+            "task_type",
+            "priority",
+            "estimated_time",
+            "acceptance_criteria",
+            "status",
+            "completed_at",
+            "outcome",
+        },
+    }
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            for table, columns in required.items():
+                cur.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = %s",
+                    (table,),
+                )
+                actual = {row[0] for row in cur.fetchall()}
+                assert columns.issubset(actual)
+
+
+def test_stage_five_single_active_roadmap_index(migrated_db):
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT indexname FROM pg_indexes "
+                "WHERE tablename = 'career_roadmap'"
+            )
+            indexes = {row[0] for row in cur.fetchall()}
+    assert "uq_career_roadmap_active" in indexes
+
+
+def test_stage_five_point_one_single_draft_index(migrated_db):
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT indexname FROM pg_indexes "
+                "WHERE tablename = 'career_roadmap'"
+            )
+            indexes = {row[0] for row in cur.fetchall()}
+    assert "uq_career_roadmap_draft" in indexes
 
 
 def test_stage_one_tables_exist(migrated_db):

@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     llm_thinking: Literal["enabled", "disabled"] = "enabled"
     llm_reasoning_effort: str | None = None
 
+    resume_storage_dir: str = ""
+    resume_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1)
+    resume_max_text_chars: int = Field(default=20000, ge=1000, le=200000)
+
     checkpoint_backend: str = "memory"
 
     @property

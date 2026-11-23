@@ -7,10 +7,12 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
-from typing import Any, Callable, TypeVar
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, Callable, Generic, TypeVar
 
 import httpx
 from pydantic import BaseModel, Field, ValidationError
@@ -96,6 +98,21 @@ class LLMResponse(BaseModel):
     finish_reason: str | None = None
 
 
+class LLMStreamChunk(BaseModel):
+    content: str = ""
+    model: str = ""
+    finish_reason: str | None = None
+    usage: LLMUsage = Field(default_factory=LLMUsage)
+
+
+@dataclass
+class StructuredResult(Generic[SchemaT]):
+    value: SchemaT
+    usage: LLMUsage
+    model: str
+    finish_reason: str | None
+
+
 def _strip_code_fence(text: str) -> str:
     stripped = text.strip()
     if stripped.startswith("```"):
@@ -123,12 +140,14 @@ class LLMClient:
         settings: Settings | None = None,
         *,
         http_client: httpx.Client | None = None,
+        async_http_client: httpx.AsyncClient | None = None,
         mock_text: str | None = None,
         mock_payload: dict[str, Any] | None = None,
         sleep_func: Callable[[float], None] = time.sleep,
     ) -> None:
         self.settings = settings or get_settings()
         self._http = http_client
+        self._async_http = async_http_client
         self._mock_text = mock_text
         self._mock_payload = mock_payload
         self._sleep = sleep_func
@@ -166,12 +185,28 @@ class LLMClient:
         user_prompt: str,
         schema: type[SchemaT],
     ) -> SchemaT:
+        return self.complete_structured_with_meta(system_prompt, user_prompt, schema).value
+
+    def complete_structured_with_meta(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        schema: type[SchemaT],
+        *,
+        mock_payload: dict[str, Any] | None = None,
+    ) -> StructuredResult[SchemaT]:
         if self.mode == "mock":
-            if self._mock_payload is None:
+            payload = mock_payload if mock_payload is not None else self._mock_payload
+            if payload is None:
                 raise LLMNotConfiguredError(
-                    "Mock 模式未提供 mock_payload；阶段一业务节点不依赖真实模型"
+                    "Mock 模式未提供 mock_payload；业务节点必须提供确定性 Mock 数据"
                 )
-            return schema.model_validate(self._mock_payload)
+            return StructuredResult(
+                value=schema.model_validate(payload),
+                usage=LLMUsage(),
+                model=self.settings.llm_model,
+                finish_reason="stop",
+            )
 
         messages: list[dict[str, str]] = [
             {"role": "system", "content": system_prompt},
@@ -185,10 +220,15 @@ class LLMClient:
                     response_format={"type": "json_object"},
                 )
                 payload = json.loads(_strip_code_fence(response.content))
-                return schema.model_validate(payload)
+                return StructuredResult(
+                    value=schema.model_validate(payload),
+                    usage=response.usage,
+                    model=response.model,
+                    finish_reason=response.finish_reason,
+                )
             except (LLMNotConfiguredError, LLMNonRetryableError):
                 raise
-            except (json.JSONDecodeError, ValidationError, LLMError) as exc:
+            except (json.JSONDecodeError, ValidationError) as exc:
                 last_error = exc
                 if attempt > self.settings.llm_max_retries:
                     break
@@ -262,19 +302,21 @@ class LLMClient:
         if missing:
             raise LLMNotConfiguredError(f"LLM 未配置：缺少 {', '.join(missing)}")
 
-    def _post_once(
+    def _build_payload(
         self,
         messages: list[dict[str, Any]],
         *,
+        stream: bool,
         response_format: dict[str, Any] | None,
         tools: list[dict[str, Any]] | None,
-    ) -> LLMResponse:
+        max_tokens: int | None = None,
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.settings.llm_model,
             "messages": messages,
             "temperature": self.settings.llm_temperature,
-            "max_tokens": self.settings.llm_max_tokens,
-            "stream": False,
+            "max_tokens": max_tokens or self.settings.llm_max_tokens,
+            "stream": stream,
         }
         if self.settings.llm_provider == "zhipu":
             payload["thinking"] = {"type": self.settings.llm_thinking}
@@ -285,6 +327,21 @@ class LLMClient:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        return payload
+
+    def _post_once(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        response_format: dict[str, Any] | None,
+        tools: list[dict[str, Any]] | None,
+    ) -> LLMResponse:
+        payload = self._build_payload(
+            messages,
+            stream=False,
+            response_format=response_format,
+            tools=tools,
+        )
 
         started = time.perf_counter()
         try:
@@ -356,6 +413,205 @@ class LLMClient:
             },
         )
         return result
+
+
+    def _raise_http_error(
+        self,
+        status_code: int,
+        body: str,
+        headers: httpx.Headers,
+    ) -> None:
+        if status_code == 429:
+            raise LLMRateLimitError(
+                "LLM 服务返回 HTTP 429 限流",
+                retry_after=_parse_retry_after(headers.get("Retry-After")),
+            )
+        if 500 <= status_code <= 599:
+            raise LLMServerError(f"LLM 服务返回 HTTP {status_code}")
+        raise LLMNonRetryableError(
+            f"LLM 服务拒绝请求 HTTP {status_code}：{redact(body[:200])}"
+        )
+
+    async def astream_chat(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        response_format: dict[str, Any] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        mock_text: str | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[LLMStreamChunk]:
+        """真实 Token 流式接口。
+
+        Mock 模式只产生明确标注的本地文本分片，不伪造真实 token 用量；
+        Real 模式必须收到 SSE 流，非 SSE 响应会明确报错，不静默降级。
+        """
+        if self.mode == "mock":
+            text = mock_text if mock_text is not None else (self._mock_text or "")
+            if not text:
+                text = "【Mock LLM】当前为 Mock 模式，未调用真实模型。"
+            for index in range(0, len(text), 12):
+                yield LLMStreamChunk(
+                    content=text[index : index + 12],
+                    model=self.settings.llm_model,
+                )
+            yield LLMStreamChunk(
+                model=self.settings.llm_model,
+                finish_reason="stop",
+                usage=LLMUsage(),
+            )
+            return
+
+        self._require_real_config()
+        attempts = 1 + self.settings.llm_max_retries
+        for attempt in range(1, attempts + 1):
+            emitted_content = False
+            try:
+                async for chunk in self._astream_once(
+                    messages,
+                    response_format=response_format,
+                    tools=tools,
+                    max_tokens=max_tokens,
+                ):
+                    if chunk.content:
+                        emitted_content = True
+                    yield chunk
+                return
+            except LLMRateLimitError as exc:
+                if (
+                    emitted_content
+                    or exc.retry_after is None
+                    or attempt >= attempts
+                ):
+                    raise LLMRateLimitError(
+                        f"{exc}（限流停止；已尝试 {attempt} 次）",
+                        retry_after=exc.retry_after,
+                        retry_exhausted=attempt >= attempts,
+                    ) from exc
+                await asyncio.sleep(min(exc.retry_after, 30.0))
+            except (LLMTimeoutError, LLMServerError, LLMRetryableError) as exc:
+                if emitted_content or attempt >= attempts:
+                    raise LLMRetryableError(
+                        f"{exc}（流式重试 {attempt - 1} 次仍失败）",
+                        retry_exhausted=True,
+                    ) from exc
+                await asyncio.sleep(min(2 ** (attempt - 1), 8))
+
+    async def _astream_once(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        response_format: dict[str, Any] | None,
+        tools: list[dict[str, Any]] | None,
+        max_tokens: int | None,
+    ) -> AsyncIterator[LLMStreamChunk]:
+        payload = self._build_payload(
+            messages,
+            stream=True,
+            response_format=response_format,
+            tools=tools,
+            max_tokens=max_tokens,
+        )
+        started = time.perf_counter()
+        client = self._async_http
+        close_client = False
+        if client is None:
+            client = httpx.AsyncClient(timeout=self.settings.llm_timeout)
+            close_client = True
+        try:
+            async with client.stream(
+                "POST",
+                f"{self.settings.llm_base_url.rstrip('/')}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.settings.llm_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=self.settings.llm_timeout,
+            ) as response:
+                if response.status_code >= 400:
+                    body = (await response.aread()).decode(
+                        "utf-8", errors="replace"
+                    )
+                    self._raise_http_error(
+                        response.status_code, body, response.headers
+                    )
+
+                content_type = response.headers.get("content-type", "")
+                if "text/event-stream" not in content_type.lower():
+                    body = (await response.aread()).decode(
+                        "utf-8", errors="replace"
+                    )
+                    raise LLMNonRetryableError(
+                        "LLM Provider 未返回 SSE 流；拒绝把一次性响应伪装为流式输出。"
+                        f"响应摘要：{redact(body[:200])}"
+                    )
+
+                model = self.settings.llm_model
+                usage = LLMUsage()
+                finish_reason: str | None = None
+                async for line in response.aiter_lines():
+                    if not line or line.startswith(":"):
+                        continue
+                    if not line.startswith("data:"):
+                        continue
+                    data_text = line[5:].strip()
+                    if not data_text or data_text == "[DONE]":
+                        continue
+                    try:
+                        data = json.loads(data_text)
+                    except json.JSONDecodeError as exc:
+                        raise LLMRetryableError(
+                            "LLM 流式响应包含非法 JSON"
+                        ) from exc
+                    model = str(data.get("model") or model)
+                    usage_data = data.get("usage") or {}
+                    if usage_data:
+                        usage = LLMUsage(
+                            prompt_tokens=usage_data.get("prompt_tokens"),
+                            completion_tokens=usage_data.get("completion_tokens"),
+                            total_tokens=usage_data.get("total_tokens"),
+                        )
+                    choices = data.get("choices") or []
+                    if not choices:
+                        continue
+                    choice = choices[0]
+                    finish_reason = choice.get("finish_reason") or finish_reason
+                    delta = choice.get("delta") or {}
+                    content = delta.get("content") or ""
+                    if content:
+                        yield LLMStreamChunk(content=content, model=model)
+                    if finish_reason == "sensitive":
+                        raise LLMNonRetryableError(
+                            "LLM 输出被内容安全审核拦截"
+                        )
+                    if finish_reason == "model_context_window_exceeded":
+                        raise LLMNonRetryableError(
+                            "LLM 输入超出上下文窗口"
+                        )
+
+                yield LLMStreamChunk(
+                    model=model,
+                    finish_reason=finish_reason,
+                    usage=usage,
+                )
+        except httpx.TimeoutException as exc:
+            raise LLMTimeoutError("LLM 流式请求超时") from exc
+        except httpx.HTTPError as exc:
+            raise LLMRetryableError(
+                f"LLM 流式网络错误：{redact(str(exc))}"
+            ) from exc
+        finally:
+            if close_client:
+                await client.aclose()
+
+        logger.info(
+            "llm_stream_call",
+            extra={
+                "event": "llm_stream_call",
+                "duration_ms": int((time.perf_counter() - started) * 1000),
+            },
+        )
 
 
 def get_llm_client() -> LLMClient:

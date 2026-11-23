@@ -2,72 +2,64 @@
 import { computed } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 
+import AppIcon from '@/components/AppIcon.vue'
+
 const route = useRoute()
 const pageTitle = computed(() => String(route.meta.title ?? 'CareerPilot AI'))
+const isChat = computed(() => route.name === 'chat')
 
-const planned = [
-  { label: 'Dashboard', hint: '发展驾驶舱', phase: '阶段八' },
-  { label: 'Profile', hint: '个人职业画像', phase: '阶段三' },
-  { label: 'Market', hint: '行业趋势', phase: '阶段四' },
-  { label: 'Opportunities', hint: '职业机会', phase: '阶段七' },
-  { label: 'Roadmap', hint: '成长规划', phase: '阶段七' },
+const navItems = [
+  { to: '/chat', icon: 'chat' as const, label: 'AI 职业顾问' },
+  { to: '/profile', icon: 'profile' as const, label: '职业画像' },
+  { to: '/market', icon: 'market' as const, label: '市场洞察' },
+  { to: '/roadmap', icon: 'roadmap' as const, label: '成长路线' },
 ]
 </script>
 
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :class="{ 'is-chat': isChat }">
     <aside class="sidebar">
       <div class="brand">
-        <span class="brand-mark">CP</span>
-        <div>
-          <div class="brand-name">CareerPilot</div>
-          <div class="brand-sub">AI career copilot</div>
-        </div>
+        <span class="brand-mark" aria-hidden="true">C</span>
+        <span class="brand-copy">
+          <span class="brand-name">CareerPilot AI</span>
+          <span class="brand-sub">智绘职涯 · AI 职业发展平台</span>
+        </span>
       </div>
 
       <nav class="nav" aria-label="主导航">
-        <div class="nav-section">当前可用</div>
-        <RouterLink to="/chat" class="nav-item" active-class="active">
-          <span class="nav-icon">C</span>
-          <span>
-            <strong>Chat</strong>
-            <small>AI 职业顾问</small>
-          </span>
+        <div class="nav-label">工作台</div>
+        <RouterLink
+          v-for="item in navItems"
+          :key="item.to"
+          :to="item.to"
+          class="nav-item"
+          active-class="is-active"
+        >
+          <AppIcon :name="item.icon" :size="18" />
+          <span>{{ item.label }}</span>
         </RouterLink>
 
-        <div class="nav-section">后续阶段</div>
-        <div
-          v-for="item in planned"
-          :key="item.label"
-          class="nav-item planned"
-          aria-disabled="true"
-        >
-          <span class="nav-icon muted">·</span>
-          <span>
-            <strong>{{ item.label }}</strong>
-            <small>{{ item.hint }} · {{ item.phase }}</small>
-          </span>
+        <div class="nav-divider"></div>
+        <div class="nav-item is-planned" aria-disabled="true">
+          <AppIcon name="dashboard" :size="18" />
+          <span>Dashboard</span>
+          <span class="nav-tag">规划中</span>
         </div>
       </nav>
 
-      <div class="sidebar-footer">
-        <span class="dot"></span>
-        Stage 01 · 工程初始化
+      <div class="sidebar-foot">
+        <span>让职业选择有依据</span>
+        <span>让个人成长有方向</span>
       </div>
     </aside>
 
     <div class="app-body">
       <header class="topbar">
-        <div>
-          <div class="topbar-kicker">CareerPilot AI</div>
-          <h1 class="topbar-title">{{ pageTitle }}</h1>
-        </div>
-        <div class="topbar-badges">
-          <span class="badge">阶段一</span>
-          <span class="badge mock">Mock 安全模式</span>
+        <div class="topbar-inner">
+          <h1>{{ pageTitle }}</h1>
         </div>
       </header>
-
       <main class="app-main">
         <slot />
       </main>

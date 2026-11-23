@@ -6,7 +6,7 @@ import type {
   ToolListDto,
 } from '@/types/chat'
 
-export function createConversation(title = '阶段一职业咨询'): Promise<ConversationDto> {
+export function createConversation(title = 'AI 职业咨询'): Promise<ConversationDto> {
   return requestJson<ConversationDto>('/api/conversations', {
     method: 'POST',
     body: JSON.stringify({ title }),

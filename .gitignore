@@ -41,3 +41,12 @@ Thumbs.db
 *.log
 *.pid
 tmp/
+# Local project documents (internal, not tracked)
+/docs/PROJECT_CONTEXT.md
+/docs/DEVELOPMENT_STATUS.md
+/docs/TECHNICAL_ARCHITECTURE.md
+/docs/DECISIONS_AND_LOG.md
+# Local tooling and acceptance artifacts
+.codeartsdoer/
+.merkle-snapshot.json
+/docs/阶段检查报告.md

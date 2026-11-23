@@ -20,6 +20,7 @@ class Tracer(Protocol):
         user_id: UUID,
         request_id: str,
         run_id: UUID | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> UUID: ...
 
     def finish_run(
@@ -47,6 +48,7 @@ class NullTracer:
         user_id: UUID,
         request_id: str,
         run_id: UUID | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> UUID:
         from uuid import uuid4
 
@@ -77,12 +79,16 @@ class DatabaseTracer:
         user_id: UUID,
         request_id: str,
         run_id: UUID | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> UUID:
+        payload = {"source": "api.chat"}
+        if metadata:
+            payload.update(metadata)
         return run_repository.create(
             conversation_id,
             user_id,
             request_id,
-            metadata={"source": "api.chat"},
+            metadata=payload,
             run_id=run_id,
         )
 

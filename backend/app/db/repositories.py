@@ -117,6 +117,26 @@ class MessageRepository:
                 )
                 return list(cur.fetchall())
 
+    def list_recent_for_conversation(
+        self, conversation_id: UUID, user_id: UUID, limit: int = 12
+    ) -> list[dict[str, Any]]:
+        with get_pool().connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    """
+                    SELECT m.id, m.conversation_id, m.role, m.content, m.created_at
+                    FROM message m
+                    JOIN conversation c ON c.id = m.conversation_id
+                    WHERE m.conversation_id = %s AND c.user_id = %s
+                    ORDER BY m.created_at DESC, m.id DESC
+                    LIMIT %s
+                    """,
+                    (conversation_id, user_id, limit),
+                )
+                rows = list(cur.fetchall())
+                rows.reverse()
+                return rows
+
 
 class RunRepository:
     def create(

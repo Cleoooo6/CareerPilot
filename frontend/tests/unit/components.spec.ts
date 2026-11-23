@@ -6,7 +6,7 @@ import MessageInput from '@/components/MessageInput.vue'
 import MessageList from '@/components/MessageList.vue'
 import StatusTimeline from '@/components/StatusTimeline.vue'
 
-describe('stage-one components', () => {
+describe('stage-two components', () => {
   it('renders user and assistant messages', () => {
     const wrapper = mount(MessageList, {
       props: {
@@ -31,6 +31,23 @@ describe('stage-one components', () => {
     expect(wrapper.findAll('.message')).toHaveLength(2)
   })
 
+  it('shows a streaming caret on the last assistant message', async () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [
+          {
+            id: 'm1',
+            role: 'assistant',
+            content: '正在生成',
+            createdAt: '2026-11-23T12:00:00Z',
+          },
+        ],
+        streaming: true,
+      },
+    })
+    expect(wrapper.find('.streaming-caret').exists()).toBe(true)
+  })
+
   it('emits send on Enter and blocks empty input', async () => {
     const wrapper = mount(MessageInput, { props: { streaming: false } })
     const textarea = wrapper.get('textarea')
@@ -53,7 +70,7 @@ describe('stage-one components', () => {
       props: {
         items: [
           { node: 'INTENT', status: 'completed', updatedAt: 'x' },
-          { node: 'ECHO', status: 'running', updatedAt: 'x' },
+          { node: 'REPLY', status: 'running', updatedAt: 'x' },
         ],
       },
     })

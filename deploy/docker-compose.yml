@@ -77,6 +77,7 @@ volumes:
   pg_data:
     name: careerpilot_pg_data
 
+
 networks:
   careerpilot_net:
     name: careerpilot_net

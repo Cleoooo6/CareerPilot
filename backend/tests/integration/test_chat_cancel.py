@@ -12,9 +12,14 @@ pytestmark = pytest.mark.integration
 
 
 class SlowGraph:
-    async def astream_events(self, state, version="v2"):
+    async def astream(self, state, stream_mode=None):
         await asyncio.sleep(30)
-        yield {"event": "on_chain_end", "name": "ECHO", "data": {"output": {}}}
+        yield "custom", {
+            "type": "node_started",
+            "node": "REPLY",
+            "started_at": "2026-11-23T00:00:00+00:00",
+        }
+        yield "updates", {"REPLY": {"response": "late"}}
 
 
 def _run_row(run_id: UUID) -> tuple[str, str | None]:
