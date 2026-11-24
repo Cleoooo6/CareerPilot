@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ProfileAnalysisOut, ProfileData, SkillItem } from '@/types/profile'
+import type { SkillGap } from '@/types/roadmap'
 import {
   UNCATEGORIZED_SKILL,
+  gapCoverage,
   groupSkills,
   latestAnalysis,
   marketSkillGap,
@@ -115,6 +117,22 @@ describe('profile view helpers', () => {
     expect(missing).toContain('学历')
     expect(missing).toContain('技能证据')
     expect(missing).toContain('项目经历')
+  })
+
+  it('derives coverage from the shared roadmap gap payload', () => {
+    const gap = {
+      matched: [
+        { name: 'Python', market_count: 4, market_share: 0.6667, priority: 'low', reason: '' },
+      ],
+      to_improve: [
+        { name: 'SQL', market_count: 5, market_share: 0.8333, priority: 'low', reason: '' },
+      ],
+      not_recorded: [
+        { name: 'Excel', market_count: 3, market_share: 0.5, priority: 'high', reason: '' },
+      ],
+    } as SkillGap
+    expect(gapCoverage(gap)).toEqual({ matched: 1, total: 3 })
+    expect(gapCoverage(null)).toEqual({ matched: 0, total: 0 })
   })
 
   it('always selects the newest analysis by created_at', () => {

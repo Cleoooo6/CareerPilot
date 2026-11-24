@@ -1,11 +1,42 @@
-import { expect, test } from '@playwright/test'
+import { expect, fileUser, test, userHeaders } from './fixtures'
 import { fileURLToPath } from 'node:url'
+
+const USER = fileUser('profile')
+test.use({ extraHTTPHeaders: { 'X-User-Id': USER } })
 
 const resumeFixture = fileURLToPath(
   new URL('./fixtures/fictional-resume.docx', import.meta.url),
 )
 
-test('career portrait leads and source management still works', async ({
+const SEED_PROFILE = {
+  basic: {
+    name: 'E2E 画像测试用户',
+    education_level: '本科',
+    major: '信息管理与信息系统',
+    graduation_year: 2026,
+    location: '上海',
+  },
+  goals: {
+    target_role: '数据分析师',
+    target_industry: '互联网',
+    job_status: '求职中',
+    desired_direction: '数据分析',
+  },
+  skills: [],
+  education: [],
+  projects: [],
+  experiences: [],
+}
+
+test.beforeAll(async ({ request }) => {
+  const response = await request.put('/api/profile', {
+    data: { data: SEED_PROFILE },
+    headers: userHeaders(USER),
+  })
+  expect(response.ok()).toBeTruthy()
+})
+
+test('profile five tabs, source labels, resume import and analysis still work', async ({
   page,
 }) => {
   const pageErrors: string[] = []
@@ -13,23 +44,22 @@ test('career portrait leads and source management still works', async ({
   page.on('dialog', (dialog) => dialog.accept())
 
   await page.goto('/profile')
-  await expect(
-    page.getByRole('heading', { name: '你的职业画像' }),
-  ).toBeVisible()
+  await expect(page.getByRole('heading', { level: 2, name: /Profile/ })).toBeVisible()
   await page.waitForLoadState('networkidle')
 
+  await page.getByRole('tab', { name: /Manage Profile/ }).click()
   const deleteButton = page.getByRole('button', { name: '删除画像' })
   if (await deleteButton.count()) {
     await deleteButton.click()
-    await expect(page.getByText('职业画像已删除')).toBeVisible()
+    await expect(page.getByText(/职业画像已删除/)).toBeVisible()
   }
 
-  await expect(page.getByRole('heading', { name: '资料管理' })).toBeVisible()
-
   await page.getByLabel('姓名').fill('林小舟')
+  await page.getByText('职业目标', { exact: true }).click()
   await page.getByLabel('目标岗位').fill('数据分析师')
   await page.getByLabel('所在地').fill('上海')
 
+  await page.getByText('技能清单', { exact: true }).click()
   await page.getByRole('button', { name: '添加技能' }).click()
   await page.getByLabel('技能名称').fill('Python')
   await page.getByLabel('熟练程度').fill('熟练')
@@ -37,58 +67,50 @@ test('career portrait leads and source management still works', async ({
   await page.getByLabel('技能分类').fill('编程语言')
 
   await page.getByRole('button', { name: '保存画像' }).click()
-  await expect(page.getByText('职业画像已保存，并记录了新版本')).toBeVisible()
+  await expect(page.getByText(/职业画像已保存/)).toBeVisible()
 
-  await expect(page.getByRole('heading', { name: '职业概览' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: '能力结构' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: '职业方向' })).toBeVisible()
+  await page.getByRole('tab', { name: /Overview/ }).click()
+  await expect(page.getByRole('heading', { name: '基本信息' })).toBeVisible()
+  await expect(page.getByText('最近动态')).toBeVisible()
+  await expect(page.locator('.profile-growth-row').first()).toContainText(/v\d+/)
 
-  const skillCard = page.locator('.skill-card').first()
-  await expect(skillCard).toContainText('Python')
-  await expect(skillCard).toContainText('熟练')
-  await expect(skillCard).toContainText('手动录入')
-  await expect(skillCard).toContainText('已确认')
-  await expect(skillCard).toContainText('课程项目')
-  await expect(page.locator('.revision-list')).toContainText(/v\d+/)
-  await expect(page.locator('.revision-list')).toContainText('手动保存')
+  await page.getByRole('tab', { name: /Skills & Interests/ }).click()
+  await expect(page).toHaveURL(/tab=skills/)
+  const skillRow = page.locator('.skill-row').first()
+  await expect(skillRow).toContainText('Python')
+  await expect(skillRow).toContainText('课程项目')
+  await expect(skillRow).toContainText('有记录')
 
+  await page.reload()
+  await expect(
+    page.getByRole('tab', { name: /Skills & Interests/ }),
+  ).toHaveAttribute('aria-selected', 'true')
+  await expect(page.locator('.skill-row').first()).toContainText('Python')
+
+  await page.getByRole('tab', { name: /Market Match/ }).click()
   const market = page.getByTestId('profile-market-match')
   await expect(market).toBeVisible()
   await expect(market.getByText(/演示数据|真实数据|无数据/).first()).toBeVisible()
-  await expect(market).toContainText('未记录不等于不具备')
-  await expect(market).toContainText('不做能力评分')
+  await expect(market).toContainText('目标岗位需求技能已记录')
 
-  await page.reload()
-  await expect(page.getByLabel('姓名')).toHaveValue('林小舟')
-  await expect(page.getByLabel('目标岗位')).toHaveValue('数据分析师')
-  await expect(page.locator('.skill-card').first()).toContainText('Python')
+  await page.getByRole('tab', { name: /Growth Record/ }).click()
+  await expect(page.getByRole('heading', { name: '成长记录' })).toBeVisible()
 
-  await page.getByRole('tab', { name: '简历解析' }).click()
+  await page.getByRole('tab', { name: /Manage Profile/ }).click()
+  await page.getByText('简历导入', { exact: true }).click()
   await page.getByLabel('简历文件').setInputFiles(resumeFixture)
   await page.getByRole('button', { name: '上传并解析' }).click()
-  await expect(page.getByText('演示解析', { exact: true })).toBeVisible({
+  await expect(page.getByText(/简历已解析/)).toBeVisible({ timeout: 20_000 })
+  await page.getByRole('button', { name: '确认导入所选区块' }).click()
+  await expect(page.getByText(/已确认并写入职业画像/)).toBeVisible()
+  await expect(page.getByLabel('目标岗位').first()).toHaveValue('数据分析师')
+
+  await page.getByText('AI 分析历史', { exact: true }).click()
+  await page.getByRole('button', { name: '重新分析' }).click()
+  await expect(page.getByText(/AI 职业分析已完成/)).toBeVisible({
     timeout: 20_000,
   })
-  await expect(page.getByText('简历已解析，请审核后确认导入')).toBeVisible()
-  await page.getByRole('button', { name: '确认导入所选区块' }).click()
-  await expect(page.getByText('已确认并写入职业画像')).toBeVisible()
-  await expect(page.getByLabel('目标岗位')).toHaveValue('数据分析师')
-
-  await page.getByRole('tab', { name: 'AI 分析' }).click()
-  await page.getByRole('button', { name: '重新分析' }).click()
-  await expect(
-    page.locator('.analysis-detail').getByText('演示分析', { exact: true }),
-  ).toBeVisible({ timeout: 20_000 })
-  await expect(page.getByText('AI 职业分析已完成并保存')).toBeVisible()
-  await expect(page.getByRole('heading', { name: '已有优势' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: '未知信息' })).toBeVisible()
-
-  await page.reload()
-  await page.getByRole('tab', { name: 'AI 分析' }).click()
-  await expect(page.getByRole('heading', { name: '历史分析' })).toBeVisible()
-  await expect(
-    page.locator('.analysis-detail').getByText('演示分析', { exact: true }),
-  ).toBeVisible()
+  await expect(page.locator('.analysis-detail')).toContainText('AI 推断 · 待确认')
   await expect(page.locator('body')).not.toContainText('Mock')
   expect(pageErrors).toEqual([])
 })

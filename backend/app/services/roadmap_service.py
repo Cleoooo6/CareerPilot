@@ -28,6 +28,8 @@ from app.schemas.roadmap import (
 from app.services.market_service import MarketService, get_market_service
 from app.services.roadmap_gap import compute_skill_gap
 
+SKILL_DEMAND_LIMIT = 20
+
 ROADMAP_SYSTEM_PROMPT = """你是 CareerPilot AI 的个性化成长路线规划师。
 只基于给定的职业画像、技能差距和市场统计生成路线，不得编造用户经历、技能、证书或市场数字。
 
@@ -331,7 +333,7 @@ class RoadmapService:
                 status_code=409,
             )
         demand = await asyncio.to_thread(
-            partial(self.market.skills, role=role, limit=15)
+            partial(self.market.skills, role=role, limit=SKILL_DEMAND_LIMIT)
         )
         return compute_skill_gap(
             profile_data=profile,

@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 
 import ErrorNotice from '@/components/ErrorNotice.vue'
+import PageSkeleton from '@/components/PageSkeleton.vue'
+import ToastNotice from '@/components/ToastNotice.vue'
 import {
   confirmRoadmap,
   discardRoadmap,
@@ -20,21 +22,34 @@ import {
   PRIORITY_LABELS,
   ROADMAP_STATUS_LABELS,
   TASK_STATUS_LABELS,
-  TASK_TYPE_LABELS,
+  type Priority,
   type Roadmap,
+  type RoadmapStage,
   type RoadmapSummary,
   type RoadmapTask,
   type SkillGap,
   type TaskStatus,
 } from '@/types/roadmap'
 import {
+  countTaskStatuses,
   flattenRoadmapTasks,
   formatRoadmapDate,
-  marketSharePercent,
+
   progressPercent,
 } from '@/utils/roadmapView'
 import { userFacingText } from '@/utils/userFacing'
 
+type GapStatus = 'matched' | 'to_improve' | 'not_recorded'
+
+interface GapRow {
+  name: string
+  market_share: number
+  priority: Priority
+  reason: string
+  status: GapStatus
+}
+
+const route = useRoute()
 const loading = ref(true)
 const generating = ref(false)
 const confirming = ref(false)
@@ -42,13 +57,16 @@ const discarding = ref(false)
 const updatingTask = ref('')
 const targetMissing = ref(false)
 const error = ref('')
-const success = ref('')
+const toast = ref('')
 const gap = ref<SkillGap | null>(null)
 const current = ref<Roadmap | null>(null)
 const draft = ref<Roadmap | null>(null)
 const history = ref<RoadmapSummary[]>([])
 const historyDetail = ref<Roadmap | null>(null)
 const historyLoading = ref('')
+const expandedStageId = ref('')
+const gapExpanded = ref(false)
+const historyOpen = ref(false)
 const outcomeDrafts = ref<Record<string, string>>({})
 
 const headerStatus = computed(() => {
@@ -61,6 +79,9 @@ const currentPercent = computed(() =>
     ? progressPercent(current.value.task_total, current.value.task_completed)
     : 0,
 )
+const currentTasks = computed(() => flattenRoadmapTasks(current.value))
+const taskCounts = computed(() => countTaskStatuses(currentTasks.value))
+const totalTasks = computed(() => currentTasks.value.length)
 const gapDatasetLabel = computed(() => {
   const kinds = gap.value?.meta.dataset_kinds ?? []
   if (kinds.includes('real') && kinds.includes('synthetic')) return '真实 + 演示'
@@ -100,15 +121,38 @@ const currentStageId = computed(() => {
   )
   return active?.id ?? roadmap.stages[roadmap.stages.length - 1].id
 })
+const gapRows = computed<GapRow[]>(() => {
+  const result = gap.value
+  if (!result) return []
+  const priorityOrder: Record<Priority, number> = { high: 0, medium: 1, low: 2 }
+  return [
+    ...result.to_improve.map((item) => ({ ...item, status: 'to_improve' as const })),
+    ...result.not_recorded.map((item) => ({
+      ...item,
+      status: 'not_recorded' as const,
+    })),
+    ...result.matched.map((item) => ({ ...item, status: 'matched' as const })),
+  ].sort(
+    (left, right) =>
+      priorityOrder[left.priority] - priorityOrder[right.priority] ||
+      left.name.localeCompare(right.name),
+  )
+})
+const visibleGapRows = computed(() =>
+  gapExpanded.value ? gapRows.value : gapRows.value.slice(0, 6),
+)
+const nextVersion = computed(() => (current.value?.version ?? 0) + 1)
 
 function errorMessage(value: unknown): string {
   if (value instanceof ApiError) return value.message
   return '操作失败，请稍后重试'
 }
 
-function clearFeedback() {
-  error.value = ''
-  success.value = ''
+function timeLabel(): string {
+  return new Date().toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }
 
 function initOutcomes(roadmap: Roadmap | null) {
@@ -118,6 +162,51 @@ function initOutcomes(roadmap: Roadmap | null) {
       outcomeDrafts.value[task.id] = task.outcome
     }
   }
+}
+
+function stageProgress(stage: RoadmapStage): number {
+  const completed = stage.tasks.filter(
+    (task) => task.status === 'completed',
+  ).length
+  return progressPercent(stage.tasks.length, completed)
+}
+
+function stageStatusLabel(stage: RoadmapStage): string {
+  if (!stage.tasks.length) return '未开始'
+  if (stage.tasks.every((task) => task.status === 'completed')) return '已完成'
+  if (
+    stage.tasks.some(
+      (task) => task.status === 'in_progress' || task.status === 'completed',
+    )
+  ) {
+    return '进行中'
+  }
+  return '未开始'
+}
+
+function gapStatusLabel(status: GapStatus): string {
+  if (status === 'matched') return '有记录'
+  if (status === 'to_improve') return '待提升'
+  return '尚无记录'
+}
+
+function gapStatusClass(status: GapStatus): string {
+  if (status === 'matched') return 'tag-evidence'
+  if (status === 'to_improve') return 'tag-inference'
+  return 'tag'
+}
+
+function toggleStage(stageId: string) {
+  expandedStageId.value =
+    expandedStageId.value === stageId ? '' : stageId
+}
+
+function openHistory() {
+  historyOpen.value = true
+}
+
+function closeHistory() {
+  historyOpen.value = false
 }
 
 async function loadGap() {
@@ -141,6 +230,9 @@ async function loadCurrent() {
   const result = await getCurrentRoadmap()
   current.value = result.roadmap
   initOutcomes(current.value)
+  const requested = String(route.query.stage ?? '')
+  const exists = current.value?.stages.some((stage) => stage.id === requested)
+  expandedStageId.value = exists && requested ? requested : currentStageId.value
 }
 
 async function loadDraft() {
@@ -160,7 +252,7 @@ async function loadHistory() {
 
 async function loadPage() {
   loading.value = true
-  clearFeedback()
+  error.value = ''
   try {
     await Promise.all([loadGap(), loadCurrent(), loadDraft(), loadHistory()])
   } catch (value) {
@@ -171,12 +263,20 @@ async function loadPage() {
 }
 
 async function generate() {
-  clearFeedback()
+  if (
+    typeof window !== 'undefined' &&
+    !window.confirm(
+      `将生成 v${nextVersion.value} 草稿，当前正式版本与历史版本会保留。继续？`,
+    )
+  ) {
+    return
+  }
+  error.value = ''
   generating.value = true
   try {
     draft.value = await generateRoadmap(undefined, Boolean(draft.value))
     initOutcomes(draft.value)
-    success.value = '成长路线草稿已就绪，请确认后启用'
+    toast.value = `成长路线草稿已就绪 · ${timeLabel()}`
     await loadDraft()
   } catch (value) {
     error.value = errorMessage(value)
@@ -187,12 +287,12 @@ async function generate() {
 
 async function confirmDraft() {
   if (!draft.value) return
-  clearFeedback()
+  error.value = ''
   confirming.value = true
   try {
     current.value = await confirmRoadmap(draft.value.id)
     draft.value = null
-    success.value = '成长路线已启用'
+    toast.value = `成长路线已启用 · ${timeLabel()}`
     await Promise.all([loadHistory(), loadCurrent()])
   } catch (value) {
     error.value = errorMessage(value)
@@ -203,12 +303,12 @@ async function confirmDraft() {
 
 async function discardDraft() {
   if (!draft.value) return
-  clearFeedback()
+  error.value = ''
   discarding.value = true
   try {
     await discardRoadmap(draft.value.id)
     draft.value = null
-    success.value = '草稿已放弃，正式路线未改变'
+    toast.value = `草稿已放弃，正式路线未改变 · ${timeLabel()}`
   } catch (value) {
     error.value = errorMessage(value)
   } finally {
@@ -238,7 +338,7 @@ async function updateTask(
   status: TaskStatus,
   recordOutcome = status === 'completed',
 ) {
-  clearFeedback()
+  error.value = ''
   updatingTask.value = task.id
   try {
     const outcome = recordOutcome
@@ -247,8 +347,10 @@ async function updateTask(
     const result = await updateRoadmapTask(task.id, status, outcome)
     applyTask(result.task)
     outcomeDrafts.value[task.id] = result.task.outcome
-    success.value =
-      status === 'completed' ? '任务已完成，成果已记录' : '任务状态已更新'
+    toast.value =
+      status === 'completed'
+        ? `任务已完成，成果已记录 · ${timeLabel()}`
+        : `任务状态已更新 · ${timeLabel()}`
   } catch (value) {
     error.value = errorMessage(value)
   } finally {
@@ -260,12 +362,31 @@ async function saveOutcome(task: RoadmapTask) {
   await updateTask(task, task.status, true)
 }
 
-async function toggleHistory(item: RoadmapSummary) {
+function primaryLabel(task: RoadmapTask): string {
+  if (task.status === 'pending') return '开始任务'
+  if (task.status === 'in_progress') return '标记完成'
+  if (task.status === 'completed') return '重新打开'
+  return '重新开始'
+}
+
+function primaryAction(task: RoadmapTask) {
+  if (task.status === 'pending') {
+    void updateTask(task, 'in_progress')
+    return
+  }
+  if (task.status === 'in_progress') {
+    void updateTask(task, 'completed')
+    return
+  }
+  void updateTask(task, 'in_progress')
+}
+
+async function viewHistory(item: RoadmapSummary) {
   if (historyDetail.value?.id === item.id) {
     historyDetail.value = null
     return
   }
-  clearFeedback()
+  error.value = ''
   historyLoading.value = item.id
   try {
     historyDetail.value = await getRoadmap(item.id)
@@ -283,23 +404,40 @@ onMounted(() => {
 
 <template>
   <section class="page roadmap-page">
-    <header class="page-head roadmap-head">
+    <header class="page-head roadmap-v2-head">
       <div class="page-head-copy">
-
-        <h2>从当前状态，走向目标</h2>
+        <h2>My Roadmap <span class="page-title-cn">成长路线</span></h2>
         <p class="page-lede">
-          把目标拆成阶段，把阶段拆成下一步。
+          <template v-if="current">
+            目标 {{ current.target_role }} · 当前版本 v{{ current.version }}
+          </template>
+          <template v-else>
+            把目标拆成阶段，把阶段拆成下一步。
+          </template>
+        </p>
+        <p class="roadmap-v2-stats">
+          进行中 {{ taskCounts.in_progress }} 项 · 已完成
+          {{ taskCounts.completed }} 项 · 总计 {{ totalTasks }} 项
         </p>
       </div>
       <div class="page-head-actions roadmap-head-actions">
         <span class="badge">{{ headerStatus }}</span>
         <button
           type="button"
-          class="button primary"
+          class="button"
+          :class="draft ? 'secondary' : 'primary'"
           :disabled="generating || targetMissing"
           @click="generate"
         >
-          {{ generating ? '正在生成' : draft ? '重新生成草稿' : '生成成长路线' }}
+          {{ generating ? '正在生成' : draft ? '重新生成草稿' : '生成新版本' }}
+        </button>
+        <button
+          type="button"
+          class="link-button"
+          data-testid="roadmap-history"
+          @click="openHistory"
+        >
+          历史版本
         </button>
         <RouterLink to="/profile" class="button ghost">查看职业画像</RouterLink>
       </div>
@@ -308,18 +446,20 @@ onMounted(() => {
     <ErrorNotice
       v-if="error"
       :error="{ code: 'ROADMAP_ERROR', message: error }"
+      retryable
       @dismiss="error = ''"
+      @retry="loadPage"
     />
-    <p v-if="success" class="success-note">{{ success }}</p>
 
-    <div v-if="loading" class="loading-state">正在加载成长路线…</div>
+    <PageSkeleton v-if="loading" variant="roadmap" />
 
     <template v-else>
-      <section class="page-section roadmap-gap" data-testid="roadmap-gap">
-        <div class="section-heading">
+      <section class="gap-card card" data-testid="roadmap-gap">
+        <div class="gap-card-head">
           <div>
             <p class="section-label">能力差距</p>
-            <h3>技能差距</h3>
+            <h3>技能差距（先看这里）</h3>
+            <p class="note">对照目标岗位要求，差距决定阶段顺序。</p>
           </div>
           <div class="roadmap-badges">
             <span v-if="gap" class="tag">{{ GAP_BASIS_LABELS[gap.basis] }}</span>
@@ -332,61 +472,40 @@ onMounted(() => {
         <template v-else-if="gap">
           <div class="market-match-meta">
             <span>目标 {{ gap.target_role }}</span>
-            <span>样本 {{ gap.meta.sample_size }} 条</span>
-            <span>
-              统计周期 {{ formatRoadmapDate(gap.meta.period_start) }}–{{ formatRoadmapDate(gap.meta.period_end) }}
-            </span>
+            <span>目标岗位样本 {{ gap.meta.sample_size }} 条</span>
             <span>来源 {{ gapSources || '未记录' }}</span>
           </div>
           <p v-if="gapNote" class="market-warning">{{ gapNote }}</p>
-          <div class="match-columns gap-columns">
-            <div>
-              <h4>有记录且有证据</h4>
-              <p class="note">资料已确认，未做客观能力验证。</p>
-              <ul v-if="gap.matched.length" class="gap-list">
-                <li v-for="item in gap.matched" :key="item.name">
-                  <div class="gap-line">
-                    <span>{{ item.name }}</span>
-                    <small>{{ marketSharePercent(item) }}%</small>
-                  </div>
-                  <p class="gap-reason">{{ item.reason }}</p>
-                </li>
-              </ul>
-              <p v-else class="note">暂无有证据的技能。</p>
-            </div>
-            <div>
-              <h4>待提升</h4>
-              <ul v-if="gap.to_improve.length" class="gap-list">
-                <li v-for="item in gap.to_improve" :key="item.name">
-                  <div class="gap-line">
-                    <span>{{ item.name }}</span>
-                    <small>
-                      {{ marketSharePercent(item) }}% ·
-                      {{ PRIORITY_LABELS[item.priority] }}
-                    </small>
-                  </div>
-                  <p class="gap-reason">{{ item.reason }}</p>
-                </li>
-              </ul>
-              <p v-else class="note">暂无。</p>
-            </div>
-            <div>
-              <h4>尚无记录（不等于不会）</h4>
-              <ul v-if="gap.not_recorded.length" class="gap-list">
-                <li v-for="item in gap.not_recorded" :key="item.name">
-                  <div class="gap-line">
-                    <span>{{ item.name }}</span>
-                    <small>
-                      {{ marketSharePercent(item) }}% ·
-                      {{ PRIORITY_LABELS[item.priority] }}
-                    </small>
-                  </div>
-                  <p class="gap-reason">{{ item.reason }}</p>
-                </li>
-              </ul>
-              <p v-else class="note">暂无。</p>
-            </div>
-          </div>
+          <table v-if="gapRows.length" class="gap-table">
+            <thead>
+              <tr>
+                <th>技能</th>
+                <th>需求占比</th>
+                <th>状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="item in visibleGapRows" :key="`${item.status}-${item.name}`">
+                <td :title="userFacingText(item.reason)">{{ item.name }}</td>
+                <td>{{ Math.round(item.market_share * 100) }}%</td>
+                <td>
+                  <span class="tag" :class="gapStatusClass(item.status)">
+                    {{ gapStatusLabel(item.status) }}
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <button
+            v-if="gapRows.length > 6"
+            type="button"
+            class="link-button"
+            style="margin-top: 8px"
+            @click="gapExpanded = !gapExpanded"
+          >
+            {{ gapExpanded ? '收起' : `展开全部 ${gapRows.length} 项` }}
+          </button>
+          <p v-else class="note">暂无差距数据。</p>
           <p class="note">
             资料已确认不等于客观验证；没有记录不等于不具备。
           </p>
@@ -408,9 +527,10 @@ onMounted(() => {
                 <span class="tag">{{ generationLabel }}</span>
               </div>
             </template>
-            <p v-else class="note">还没有正式路线。先生成草稿，核对后确认启用。</p>
+            <p v-else class="note">
+              还没有正式路线。先生成草稿，核对后确认启用。
+            </p>
           </div>
-          <span v-if="current" class="tag">正式 v{{ current.version }}</span>
         </div>
 
         <template v-if="current">
@@ -424,46 +544,58 @@ onMounted(() => {
             <div :style="{ width: `${currentPercent}%` }"></div>
           </div>
 
-          <ol class="route-timeline">
-            <li
-              v-for="(stage, stageIndex) in current.stages"
+          <div class="stage-list">
+            <div
+              v-for="(stage, index) in current.stages"
               :key="stage.id"
-              class="route-stage"
-              :class="{ 'is-current': stage.id === currentStageId }"
+              class="stage-row"
+              :class="{
+                'is-current': stage.id === currentStageId,
+                'is-done': stageProgress(stage) === 100,
+              }"
             >
-              <div class="route-marker">{{ stageIndex + 1 }}</div>
-              <div class="route-stage-body">
-                <header class="route-stage-head">
-                  <div>
-                    <h4>{{ stage.title }}</h4>
-                    <p class="note">
-                      {{ stage.goal }}
-                      <template v-if="stage.duration"> · 预计 {{ stage.duration }}</template>
-                    </p>
-                  </div>
-                  <span class="tag tag-muted">{{ PRIORITY_LABELS[stage.priority] }}优先级</span>
-                </header>
+              <button
+                type="button"
+                class="stage-row-head"
+                @click="toggleStage(stage.id)"
+              >
+                <span class="stage-index">
+                  {{ stageProgress(stage) === 100 ? '✓' : index + 1 }}
+                </span>
+                <span class="stage-row-copy">
+                  <strong>{{ stage.title }}</strong>
+                  <span>
+                    {{ stage.goal }} ·
+                    {{ stage.duration || '时间未记录' }}
+                  </span>
+                </span>
+                <span class="stage-percent">{{ stageProgress(stage) }}%</span>
+                <span class="tag">{{ stageStatusLabel(stage) }}</span>
+              </button>
 
+              <div
+                v-if="expandedStageId === stage.id"
+                class="stage-row-body"
+              >
                 <article
                   v-for="task in stage.tasks"
                   :key="task.id"
-                  class="roadmap-task"
+                  class="task-v2"
+                  :class="{ 'is-current': task.status === 'in_progress' }"
                 >
-                  <div class="roadmap-task-head">
+                  <div class="task-v2-head">
                     <strong>{{ task.title }}</strong>
                     <span class="tag">{{ TASK_STATUS_LABELS[task.status] }}</span>
-                    <span class="tag tag-muted">{{ TASK_TYPE_LABELS[task.task_type] }}</span>
-                    <span class="tag tag-muted">{{ PRIORITY_LABELS[task.priority] }}</span>
                   </div>
-                  <p class="roadmap-task-desc">{{ task.description }}</p>
-                  <p class="roadmap-acceptance">
-                    验收标准：{{ task.acceptance_criteria }}
-                  </p>
-                  <p class="note">
-                    预计 {{ task.estimated_time || '未估算' }} · 完成时间
-                    {{ task.completed_at ? formatRoadmapDate(task.completed_at) : '未完成' }}
-                  </p>
-                  <label class="field roadmap-outcome">
+                  <p class="task-v2-desc">{{ task.description }}</p>
+                  <details>
+                    <summary>验收标准</summary>
+                    <p class="note">{{ task.acceptance_criteria }}</p>
+                  </details>
+                  <label
+                    v-if="task.status === 'in_progress'"
+                    class="field roadmap-outcome"
+                  >
                     <span>实践成果（可选）</span>
                     <textarea
                       v-model="outcomeDrafts[task.id]"
@@ -472,68 +604,41 @@ onMounted(() => {
                       placeholder="成果、链接或复盘"
                     ></textarea>
                   </label>
-                  <div class="roadmap-task-actions">
+                  <p v-if="task.outcome" class="task-outcome">
+                    已记录成果：{{ task.outcome }}
+                  </p>
+                  <div class="task-v2-actions">
                     <button
-                      v-if="task.status === 'pending'"
                       type="button"
-                      class="button small"
+                      class="button small primary"
                       :disabled="updatingTask === task.id"
-                      @click="updateTask(task, 'in_progress')"
+                      @click="primaryAction(task)"
                     >
-                      开始任务
-                    </button>
-                    <template v-if="task.status === 'in_progress'">
-                      <button
-                        type="button"
-                        class="button small primary"
-                        :disabled="updatingTask === task.id"
-                        @click="updateTask(task, 'completed')"
-                      >
-                        标记完成
-                      </button>
-                      <button
-                        type="button"
-                        class="button small ghost"
-                        :disabled="updatingTask === task.id"
-                        @click="updateTask(task, 'abandoned')"
-                      >
-                        放弃任务
-                      </button>
-                    </template>
-                    <button
-                      v-if="task.status === 'completed'"
-                      type="button"
-                      class="button small ghost"
-                      :disabled="updatingTask === task.id"
-                      @click="updateTask(task, 'in_progress')"
-                    >
-                      重新打开
+                      {{ primaryLabel(task) }}
                     </button>
                     <button
-                      v-if="task.status === 'abandoned'"
+                      v-if="task.status === 'in_progress'"
                       type="button"
-                      class="button small ghost"
-                      :disabled="updatingTask === task.id"
-                      @click="updateTask(task, 'in_progress')"
-                    >
-                      重新开始
-                    </button>
-                    <button
-                      type="button"
-                      class="button small ghost"
+                      class="link-button"
                       :disabled="updatingTask === task.id"
                       @click="saveOutcome(task)"
                     >
                       保存成果
                     </button>
+                    <button
+                      v-if="task.status === 'in_progress'"
+                      type="button"
+                      class="link-button"
+                      :disabled="updatingTask === task.id"
+                      @click="updateTask(task, 'abandoned')"
+                    >
+                      放弃任务
+                    </button>
                   </div>
-                  <p v-if="task.outcome" class="task-outcome">
-                    已记录成果：{{ task.outcome }}
-                  </p>
                 </article>
               </div>
-            </li>
-          </ol>
+            </div>
+          </div>
           <p class="note">任务完成不等于技能掌握；画像变化需要新的证据与确认。</p>
         </template>
       </section>
@@ -547,7 +652,7 @@ onMounted(() => {
           <span v-if="draft" class="tag">v{{ draft.version }} · 草稿</span>
         </div>
         <p v-if="!draft" class="note">
-          暂无草稿。点击「生成成长路线」基于当前画像与市场数据生成。
+          暂无草稿。点击「生成新版本」基于当前画像与市场数据生成。
         </p>
         <template v-else>
           <h4>{{ draft.title }}</h4>
@@ -561,13 +666,9 @@ onMounted(() => {
           <p v-if="draft.gap?.reference_only" class="market-warning">
             样本量较少，当前草稿仅作参考
           </p>
-          <details open class="draft-preview">
+          <details class="draft-preview">
             <summary>查看阶段与任务（{{ draft.stages.length }} 个阶段）</summary>
-            <article
-              v-for="stage in draft.stages"
-              :key="stage.id"
-              class="draft-stage"
-            >
+            <article v-for="stage in draft.stages" :key="stage.id" class="draft-stage">
               <header class="route-stage-head">
                 <div>
                   <h4>{{ stage.title }}</h4>
@@ -612,41 +713,63 @@ onMounted(() => {
           </p>
         </template>
       </section>
+    </template>
 
-      <section class="section-block" data-testid="roadmap-history">
-        <div class="section-heading">
-          <h3>历史版本</h3>
-          <span class="tag tag-muted">只读</span>
+    <div
+      v-if="historyOpen"
+      class="drawer-backdrop"
+      @click.self="closeHistory"
+    >
+      <aside class="drawer" aria-label="历史版本">
+        <div class="drawer-head">
+          <div>
+            <h3>历史版本</h3>
+            <p class="note">只读保留，不覆盖当前路线。</p>
+            <p class="note">
+              版本号按生成顺序递增；已放弃草稿不会出现在历史列表，因此编号可能跳号。
+            </p>
+          </div>
+          <button type="button" class="button ghost small" @click="closeHistory">
+            关闭
+          </button>
         </div>
         <p v-if="!history.length" class="note">
           暂无历史版本；确认正式路线后会出现在这里。
         </p>
-        <ul v-else class="revision-list">
-          <li v-for="item in history" :key="item.id">
-            <span class="tag">v{{ item.version }}</span>
-            <span>{{ ROADMAP_STATUS_LABELS[item.status] }}</span>
-            <span>{{ item.title }}</span>
-            <time>{{ formatRoadmapDate(item.confirmed_at ?? item.updated_at) }}</time>
-            <button
-              type="button"
-              class="button small ghost"
-              :disabled="historyLoading === item.id"
-              @click="toggleHistory(item)"
-            >
-              {{ historyDetail?.id === item.id ? '收起' : '查看' }}
-            </button>
-          </li>
-        </ul>
-        <div v-if="historyDetail" class="history-detail">
-          <h4>{{ historyDetail.title }} · v{{ historyDetail.version }}</h4>
-          <p class="note">{{ historyDetail.summary }}</p>
-          <ul>
-            <li v-for="stage in historyDetail.stages" :key="stage.id">
-              {{ stage.title }}：{{ stage.tasks.length }} 个任务
-            </li>
-          </ul>
+        <div
+          v-for="item in history"
+          :key="item.id"
+          class="version-row"
+        >
+          <div>
+            <strong>
+              v{{ item.version }} · {{ ROADMAP_STATUS_LABELS[item.status] }}
+            </strong>
+            <p>
+              {{ item.task_completed }}/{{ item.task_total }} 任务 ·
+              {{ formatRoadmapDate(item.confirmed_at ?? item.updated_at) }}
+            </p>
+          </div>
+          <button
+            type="button"
+            class="button secondary small"
+            :disabled="historyLoading === item.id"
+            @click="viewHistory(item)"
+          >
+            {{ historyDetail?.id === item.id ? '收起' : '查看' }}
+          </button>
+          <div v-if="historyDetail?.id === item.id" class="history-detail">
+            <p class="note">{{ historyDetail.summary }}</p>
+            <ul>
+              <li v-for="stage in historyDetail.stages" :key="stage.id">
+                {{ stage.title }}：{{ stage.tasks.length }} 个任务
+              </li>
+            </ul>
+          </div>
         </div>
-      </section>
-    </template>
+      </aside>
+    </div>
+
+    <ToastNotice v-if="toast" :message="toast" @close="toast = ''" />
   </section>
 </template>

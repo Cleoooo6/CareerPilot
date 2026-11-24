@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 import ChatPage from '@/pages/ChatPage.vue'
+import DashboardPage from '@/pages/DashboardPage.vue'
 import MarketPage from '@/pages/MarketPage.vue'
 import ProfilePage from '@/pages/ProfilePage.vue'
 import RoadmapPage from '@/pages/RoadmapPage.vue'
@@ -8,31 +9,37 @@ import RoadmapPage from '@/pages/RoadmapPage.vue'
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: '/', redirect: '/chat' },
+    { path: '/', redirect: '/dashboard' },
+    {
+      path: '/dashboard',
+      name: 'dashboard',
+      component: DashboardPage,
+      meta: { title: 'Dashboard' },
+    },
     {
       path: '/chat',
       name: 'chat',
       component: ChatPage,
-      meta: { title: 'AI 职业顾问' },
+      meta: { title: 'AI Career Advisor' },
     },
     {
       path: '/profile',
       name: 'profile',
       component: ProfilePage,
-      meta: { title: '职业画像' },
+      meta: { title: 'Profile' },
     },
     {
       path: '/market',
       name: 'market',
       component: MarketPage,
-      meta: { title: '市场洞察' },
+      meta: { title: 'Market Radar' },
     },
     {
       path: '/roadmap',
       name: 'roadmap',
       component: RoadmapPage,
-      meta: { title: '成长路线' },
+      meta: { title: 'My Roadmap' },
     },
-    { path: '/:pathMatch(.*)*', redirect: '/chat' },
+    { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
   ],
 })

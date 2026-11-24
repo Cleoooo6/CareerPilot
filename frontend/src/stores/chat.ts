@@ -21,10 +21,14 @@ import type {
 
 const CONVERSATION_KEY = 'careerpilot:conversation_id'
 
+export type RestoreState = 'idle' | 'loading' | 'success' | 'error'
+
 export interface ChatStoreState extends ChatState {
   llmStatus: LLMStatusDto | null
   tools: ToolListDto | null
   controller: AbortController | null
+  restoreState: RestoreState
+  restoreError: ChatError | null
 }
 
 export function initialChatState(): ChatState {
@@ -177,6 +181,8 @@ const state = reactive<ChatStoreState>({
   llmStatus: null,
   tools: null,
   controller: null,
+  restoreState: 'idle',
+  restoreError: null,
 })
 
 function isBusy(): boolean {
@@ -193,19 +199,71 @@ async function loadMeta(): Promise<void> {
   if (tools.status === 'fulfilled') state.tools = tools.value
 }
 
+const HISTORY_TIMEOUT_MS = 8000
+
 async function restore(): Promise<void> {
-  if (typeof localStorage === 'undefined') return
-  const stored = localStorage.getItem(CONVERSATION_KEY)
-  if (!stored) return
-  try {
-    const result = await listMessages(stored)
-    state.conversationId = stored
-    state.messages = result.items.map(toChatMessage)
-  } catch (error) {
-    if (error instanceof ApiError && error.status === 404) {
-      localStorage.removeItem(CONVERSATION_KEY)
-    }
+  if (state.restoreState === 'loading') return
+  state.restoreState = 'loading'
+  state.restoreError = null
+  state.messages = []
+  if (typeof localStorage === 'undefined') {
+    state.restoreState = 'success'
+    return
   }
+  const stored = localStorage.getItem(CONVERSATION_KEY)
+  if (!stored) {
+    state.conversationId = ''
+    state.restoreState = 'success'
+    return
+  }
+  state.conversationId = stored
+  const controller = new AbortController()
+  let timedOut = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+      reject(new ApiError(0, 'HISTORY_TIMEOUT', '历史消息加载超时，请重试'))
+    }, HISTORY_TIMEOUT_MS)
+  })
+  try {
+    const result = await Promise.race([
+      listMessages(stored, controller.signal),
+      timeout,
+    ])
+    state.messages = result.items.map(toChatMessage)
+    state.restoreState = 'success'
+  } catch (error) {
+    if (timedOut) {
+      state.restoreError = {
+        code: 'HISTORY_TIMEOUT',
+        message: '历史消息加载超时，请重试',
+      }
+      state.restoreState = 'error'
+    } else if (error instanceof ApiError && error.status === 404) {
+      localStorage.removeItem(CONVERSATION_KEY)
+      state.conversationId = ''
+      state.messages = []
+      state.restoreState = 'success'
+    } else {
+      state.restoreError = errorToChatError(error)
+      state.restoreState = 'error'
+    }
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+function startNewConversation(): void {
+  if (typeof localStorage !== 'undefined') {
+    localStorage.removeItem(CONVERSATION_KEY)
+  }
+  Object.assign(state, initialChatState(), {
+    controller: null,
+    restoreState: 'success',
+    restoreError: null,
+  })
 }
 
 async function send(content: string): Promise<void> {
@@ -218,6 +276,14 @@ async function send(content: string): Promise<void> {
   state.intent = null
   state.activeAssistantId = null
   state.profileUsed = false
+  if (state.restoreState === 'error') {
+    state.conversationId = ''
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(CONVERSATION_KEY)
+    }
+    state.restoreState = 'success'
+    state.restoreError = null
+  }
   state.status = 'sending'
   state.messages.push({
     id: messageId(),
@@ -271,9 +337,20 @@ export const chatStore = Object.assign(state, {
   clearError,
   loadMeta,
   restore,
+  startNewConversation,
   send,
   stop,
 })
+
+export function resetChatStore(): void {
+  Object.assign(state, initialChatState(), {
+    llmStatus: null,
+    tools: null,
+    controller: null,
+    restoreState: 'idle',
+    restoreError: null,
+  })
+}
 
 export function useChatStore() {
   return chatStore

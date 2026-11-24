@@ -5,6 +5,7 @@ import {
   type ProfileData,
   type SkillItem,
 } from '@/types/profile'
+import type { SkillGap } from '@/types/roadmap'
 
 export const UNCATEGORIZED_SKILL = '未分类'
 
@@ -80,6 +81,18 @@ export function marketSkillGap(
     }
   }
   return { matched, notRecorded }
+}
+
+export interface GapCoverage {
+  matched: number
+  total: number
+}
+
+export function gapCoverage(gap: SkillGap | null): GapCoverage {
+  if (!gap) return { matched: 0, total: 0 }
+  const total =
+    gap.matched.length + gap.to_improve.length + gap.not_recorded.length
+  return { matched: gap.matched.length, total }
 }
 
 export function profileFactSummary(data: ProfileData): string[] {

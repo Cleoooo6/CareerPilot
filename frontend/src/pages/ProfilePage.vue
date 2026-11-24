@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { computed, nextTick, onMounted, ref } from 'vue'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import ErrorNotice from '@/components/ErrorNotice.vue'
+import PageSkeleton from '@/components/PageSkeleton.vue'
 import ProfileEditor from '@/components/ProfileEditor.vue'
+import ToastNotice from '@/components/ToastNotice.vue'
 import {
   analyzeProfile,
   confirmResume,
@@ -15,7 +17,8 @@ import {
   saveProfile,
   uploadResume,
 } from '@/api/profile'
-import { getMarketOverview, getMarketSkills } from '@/api/market'
+import { getMarketOverview } from '@/api/market'
+import { getCurrentRoadmap, getSkillGap } from '@/api/roadmap'
 import { ApiError } from '@/api/client'
 import {
   BASIS_LABELS,
@@ -23,47 +26,61 @@ import {
   CONFIDENCE_LABELS,
   PROFILE_SECTIONS,
   emptyProfileData,
+  type AnalysisClaim,
   type ProfileAnalysisOut,
   type ProfileData,
   type ProfileOut,
   type ProfileRevisionOut,
   type ProfileSection,
   type ResumeParseOut,
+  type SkillItem,
 } from '@/types/profile'
-import type { MarketOverview, SkillDemand } from '@/types/market'
+import type { MarketOverview } from '@/types/market'
+import type { Roadmap, RoadmapStage, SkillGap } from '@/types/roadmap'
+import { profileCompletion, topCountTitle } from '@/utils/dashboardView'
 import {
   evidenceLabel,
   formatProfileDate,
-  groupSkills,
+  gapCoverage,
   latestAnalysis,
-  marketSkillGap,
   proficiencyLabel,
-  profileFactSummary,
-  sourceLabel,
   unknownInformation,
-  verificationLabel,
 } from '@/utils/profileView'
+import { progressPercent } from '@/utils/roadmapView'
 import { userFacingText } from '@/utils/userFacing'
 
-type Tab = 'editor' | 'resume' | 'analysis'
+const TABS = [
+  { id: 'overview', en: 'Overview', cn: '总览' },
+  { id: 'skills', en: 'Skills & Interests', cn: '能力与兴趣' },
+  { id: 'market', en: 'Market Match', cn: '市场匹配' },
+  { id: 'growth', en: 'Growth Record', cn: '成长记录' },
+  { id: 'manage', en: 'Manage Profile', cn: '资料管理' },
+] as const
 
-const activeTab = ref<Tab>('editor')
+type TabId = (typeof TABS)[number]['id']
+const TAB_IDS = TABS.map((tab) => tab.id)
+
+const route = useRoute()
+const router = useRouter()
+
 const profile = ref<ProfileOut | null>(null)
 const draft = ref<ProfileData>(emptyProfileData())
 const analyses = ref<ProfileAnalysisOut[]>([])
-const selectedAnalysisId = ref<string>('')
+const selectedAnalysisId = ref('')
 const revisions = ref<ProfileRevisionOut[]>([])
 const loading = ref(true)
 const saving = ref(false)
 const analyzing = ref(false)
 const uploading = ref(false)
-const error = ref<string>('')
-const success = ref<string>('')
+const error = ref('')
+const toast = ref('')
 
 const marketOverview = ref<MarketOverview | null>(null)
-const marketSkills = ref<SkillDemand | null>(null)
 const marketLoading = ref(false)
 const marketError = ref('')
+const roadmap = ref<Roadmap | null>(null)
+const roadmapGap = ref<SkillGap | null>(null)
+const gapLoading = ref(false)
 
 const selectedFile = ref<File | null>(null)
 const resume = ref<ResumeParseOut | null>(null)
@@ -72,25 +89,87 @@ const selectedSections = ref<ProfileSection[]>(
   PROFILE_SECTIONS.map(([value]) => value),
 )
 
+const activeTab = computed<TabId>(() => {
+  const value = String(route.query.tab ?? '')
+  return TAB_IDS.includes(value as TabId) ? (value as TabId) : 'overview'
+})
 const hasProfile = computed(() => Boolean(profile.value))
 const analysis = computed(() => latestAnalysis(analyses.value))
 const targetRole = computed(
   () => profile.value?.data.goals.target_role.trim() ?? '',
 )
-const skillGroups = computed(() =>
-  groupSkills(profile.value?.data.skills ?? []),
+const completion = computed(() =>
+  profileCompletion(profile.value?.data ?? null),
 )
-const facts = computed(() =>
-  profile.value ? profileFactSummary(profile.value.data) : [],
+const initial = computed(() =>
+  (profile.value?.data.basic.name.trim() || 'P').slice(0, 1).toUpperCase(),
 )
+const identityLine = computed(() => {
+  const data = profile.value?.data
+  if (!data) return '建立画像后，这里会显示你的身份、目标与完善度。'
+  return (
+    [
+      data.basic.name,
+      data.basic.education_level,
+      data.basic.major,
+      data.basic.graduation_year ? `${data.basic.graduation_year} 届` : '',
+      data.basic.location,
+    ]
+      .filter(Boolean)
+      .join(' · ') || '资料待补充'
+  )
+})
+const basicFacts = computed(() => {
+  const data = profile.value?.data
+  if (!data) return []
+  return [
+    { label: '姓名', value: data.basic.name || '待补充' },
+    { label: '目标方向', value: data.goals.target_role || '待补充' },
+    {
+      label: '学校 / 专业',
+      value:
+        [data.basic.education_level, data.basic.major]
+          .filter(Boolean)
+          .join(' · ') || '待补充',
+    },
+    {
+      label: '毕业时间',
+      value: data.basic.graduation_year
+        ? `${data.basic.graduation_year} 年`
+        : '待补充',
+    },
+    { label: '所在地', value: data.basic.location || '待补充' },
+    { label: '目标行业', value: data.goals.target_industry || '待补充' },
+    { label: '求职状态', value: data.goals.job_status || '待补充' },
+    { label: '期望方向', value: data.goals.desired_direction || '待补充' },
+  ]
+})
+const skills = computed(() => profile.value?.data.skills ?? [])
+const analysisText = computed(() => analysis.value?.analysis.overview ?? '')
+const analysisShort = computed(() =>
+  friendly(firstSentence(analysisText.value)),
+)
+const nextActions = computed(
+  () => analysis.value?.analysis.next_actions.slice(0, 3) ?? [],
+)
+const strengths = computed(() => analysis.value?.analysis.strengths ?? [])
+const gaps = computed(() => analysis.value?.analysis.gaps ?? [])
+const directions = computed(() => analysis.value?.analysis.directions ?? [])
 const unknownItems = computed(() => {
   if (!profile.value) return []
-  const items = [
-    ...unknownInformation(profile.value.data),
-    ...(analysis.value?.analysis.missing_information ?? []),
+  return [
+    ...new Set(
+      [
+        ...unknownInformation(profile.value.data),
+        ...(analysis.value?.analysis.missing_information ?? []),
+      ]
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
   ]
-  return [...new Set(items.filter((item) => item.trim()))]
 })
+const recentRevisions = computed(() => revisions.value.slice(0, 3))
+
 const marketMeta = computed(() => marketOverview.value?.meta ?? null)
 const marketDatasetLabel = computed(() => {
   const kinds = marketMeta.value?.dataset_kinds ?? []
@@ -105,72 +184,50 @@ const marketSources = computed(
       .map((source) => userFacingText(source.name))
       .join('、') ?? '',
 )
-const datasetNote = computed(() => {
-  const kinds = marketMeta.value?.dataset_kinds ?? []
-  return kinds.includes('synthetic')
-    ? '演示数据，仅用于体验，不代表真实招聘市场'
-    : ''
-})
-const sampleNote = computed(() =>
-  marketMeta.value && !marketMeta.value.sample_sufficient
-    ? '样本量较少，仅作参考'
+const coverage = computed(() => gapCoverage(roadmapGap.value))
+const nextActionsTitle = computed(() =>
+  topCountTitle('建议', nextActions.value.length, 3),
+)
+const routeSummary = computed(() =>
+  roadmap.value
+    ? `当前路线 v${roadmap.value.version} · ${roadmap.value.task_completed}/${roadmap.value.task_total} 任务`
     : '',
 )
-const analysisModeLabel = computed(() => {
-  if (!analysis.value) return '已确认资料'
-  return analysis.value.llm_mode === 'mock' ? '演示分析' : 'AI 分析'
-})
-const resumeModeLabel = computed(() =>
-  resume.value?.parse_mode === 'mock' ? '演示解析' : '解析结果',
+const roleCards = computed(() => marketOverview.value?.top_roles.slice(0, 4) ?? [])
+const gapTop = computed(
+  () => roadmapGap.value?.to_improve.slice(0, 3) ?? [],
 )
-const resumeStatusLabel = computed(() => {
-  const status = resume.value?.status
-  if (status === 'pending_review') return '待确认'
-  if (status === 'confirmed') return '已导入'
-  if (status === 'discarded') return '已放弃'
-  if (status === 'failed') return '解析失败'
-  return '处理中'
+const conflicts = computed(() => {
+  const gap = roadmapGap.value
+  if (!gap) return []
+  const owned = new Map(
+    skills.value.map((skill) => [normalizeName(skill.name), skill.name]),
+  )
+  return gap.not_recorded
+    .filter((item) => owned.has(normalizeName(item.name)))
+    .map((item) => ({
+      skill: owned.get(normalizeName(item.name)) ?? item.name,
+      gap: item,
+    }))
 })
-const demandSkills = computed(() => marketSkills.value?.items.slice(0, 10) ?? [])
-const skillGap = computed(() =>
-  marketSkillGap(profile.value?.data.skills ?? [], demandSkills.value),
-)
-const growthItems = computed(() => {
-  if (!profile.value) return []
-  const items: { label: string; meta: string }[] = []
-  for (const project of profile.value.data.projects) {
-    items.push({
-      label: `项目：${project.name || '未命名项目'}`,
-      meta: [project.role, project.start_date, project.end_date]
-        .map((part) => part.trim())
-        .filter(Boolean)
-        .join(' · '),
-    })
-  }
-  for (const experience of profile.value.data.experiences) {
-    items.push({
-      label: `经历：${experience.company || '未填写公司'} · ${
-        experience.position || '未填写岗位'
-      }`,
-      meta: [experience.start_date, experience.end_date]
-        .map((part) => part.trim())
-        .filter(Boolean)
-        .join(' · '),
-    })
-  }
-  return items
-})
+const growthStages = computed(() => roadmap.value?.stages ?? [])
 const selectedAnalysis = computed(
   () =>
     analyses.value.find((item) => item.id === selectedAnalysisId.value) ??
     analyses.value[0] ??
     null,
 )
-const tabs: { value: Tab; label: string }[] = [
-  { value: 'editor', label: '资料编辑' },
-  { value: 'resume', label: '简历解析' },
-  { value: 'analysis', label: 'AI 分析' },
-]
+
+function normalizeName(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, '')
+}
+
+function firstSentence(text: string): string {
+  const trimmed = text.trim()
+  if (!trimmed) return ''
+  const match = trimmed.match(/^[^。！？!?；;]+[。！？!?；;]?/)
+  return match ? match[0] : trimmed
+}
 
 function cloneData(data: ProfileData): ProfileData {
   return JSON.parse(JSON.stringify(data)) as ProfileData
@@ -181,207 +238,66 @@ function errorMessage(value: unknown): string {
   return '操作失败，请稍后重试'
 }
 
-function clearFeedback() {
-  error.value = ''
-  success.value = ''
+function timeLabel(): string {
+  return new Date().toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }
 
-async function loadProfile() {
-  try {
-    const result = await getProfile()
-    profile.value = result.profile
-    draft.value = result.profile
-      ? cloneData(result.profile.data)
-      : emptyProfileData()
-  } catch (value) {
-    error.value = errorMessage(value)
+function setTab(tab: TabId) {
+  if (activeTab.value !== tab) {
+    void router.replace({ query: { ...route.query, tab } })
   }
+  void nextTick(() => {
+    document
+      .querySelector('.profile-v2-tabs')
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  })
 }
 
-async function loadAnalysisHistory() {
-  try {
-    const result = await listAnalyses()
-    analyses.value = result.items
-    if (!selectedAnalysisId.value && result.items.length) {
-      selectedAnalysisId.value = result.items[0].id
-    }
-  } catch (value) {
-    error.value = errorMessage(value)
-  }
+function basisTagClass(basis: AnalysisClaim['basis']): string {
+  if (basis === 'inference') return 'tag-inference'
+  if (basis === 'suggestion') return 'tag-suggestion'
+  return 'tag-fact'
 }
 
-async function loadRevisions() {
-  try {
-    const result = await listProfileRevisions()
-    revisions.value = result.items
-  } catch (value) {
-    error.value = errorMessage(value)
-  }
+function basisLabel(basis: AnalysisClaim['basis']): string {
+  if (basis === 'fact') return '已确认事实'
+  if (basis === 'inference') return 'AI 推断 · 待确认'
+  return 'AI 建议'
 }
 
-async function loadMarket(role: string) {
-  marketError.value = ''
-  if (!role.trim()) {
-    marketOverview.value = null
-    marketSkills.value = null
-    return
+function skillTagClass(skill: SkillItem): string {
+  if (skill.source === 'ai') return 'tag-inference'
+  if (skill.verification === 'confirmed' || skill.evidence.trim()) {
+    return 'tag-evidence'
   }
-  marketLoading.value = true
-  try {
-    const [overview, skills] = await Promise.all([
-      getMarketOverview(role),
-      getMarketSkills(role, 12),
-    ])
-    marketOverview.value = overview
-    marketSkills.value = skills
-  } catch (value) {
-    marketOverview.value = null
-    marketSkills.value = null
-    marketError.value = errorMessage(value)
-  } finally {
-    marketLoading.value = false
-  }
+  return 'tag'
 }
 
-async function loadPage() {
-  loading.value = true
-  clearFeedback()
-  try {
-    await Promise.all([loadProfile(), loadAnalysisHistory(), loadRevisions()])
-    await loadMarket(targetRole.value)
-  } finally {
-    loading.value = false
+function skillTagLabel(skill: SkillItem): string {
+  if (skill.source === 'ai') return 'AI 推断 · 待确认'
+  if (skill.verification === 'confirmed' || skill.evidence.trim()) {
+    return '有记录'
   }
+  return '待确认'
 }
 
-async function refreshPortraitData() {
-  await loadRevisions()
-  await loadMarket(targetRole.value)
+function skillLevelWidth(skill: SkillItem): number {
+  const text = skill.proficiency.trim()
+  if (/精通|专家/.test(text)) return 95
+  if (/熟练|良好/.test(text)) return 78
+  if (/熟悉|掌握/.test(text)) return 62
+  if (/了解|入门/.test(text)) return 40
+  return 30
 }
 
-async function save() {
-  clearFeedback()
-  saving.value = true
-  try {
-    profile.value = await saveProfile(draft.value)
-    draft.value = cloneData(profile.value.data)
-    success.value = '职业画像已保存，并记录了新版本'
-    await refreshPortraitData()
-  } catch (value) {
-    error.value = errorMessage(value)
-  } finally {
-    saving.value = false
-  }
-}
-
-async function removeProfile() {
-  if (!hasProfile.value) return
-  if (typeof window !== 'undefined' && !window.confirm('确认删除已保存的职业画像？')) {
-    return
-  }
-  clearFeedback()
-  saving.value = true
-  try {
-    await deleteProfile()
-    profile.value = null
-    draft.value = emptyProfileData()
-    analyses.value = []
-    selectedAnalysisId.value = ''
-    revisions.value = []
-    marketOverview.value = null
-    marketSkills.value = null
-    success.value = '职业画像已删除'
-  } catch (value) {
-    error.value = errorMessage(value)
-  } finally {
-    saving.value = false
-  }
-}
-
-function onFileChange(event: Event) {
-  const input = event.target as HTMLInputElement
-  selectedFile.value = input.files?.[0] ?? null
-}
-
-async function upload() {
-  if (!selectedFile.value) return
-  clearFeedback()
-  uploading.value = true
-  try {
-    const result = await uploadResume(selectedFile.value)
-    resume.value = result
-    resumeDraft.value = cloneData(result.parsed_data)
-    selectedSections.value = PROFILE_SECTIONS.map(([value]) => value)
-    success.value = '简历已解析，请审核后确认导入'
-  } catch (value) {
-    error.value = errorMessage(value)
-    resume.value = null
-  } finally {
-    uploading.value = false
-  }
-}
-
-async function confirmImport() {
-  if (!resume.value || !selectedSections.value.length) {
-    error.value = '请选择至少一个要导入的区块'
-    return
-  }
-  clearFeedback()
-  uploading.value = true
-  try {
-    profile.value = await confirmResume(
-      resume.value.id,
-      resumeDraft.value,
-      selectedSections.value,
-    )
-    draft.value = cloneData(profile.value.data)
-    resume.value = { ...resume.value, status: 'confirmed' }
-    success.value = '已确认并写入职业画像'
-    activeTab.value = 'editor'
-    await refreshPortraitData()
-  } catch (value) {
-    error.value = errorMessage(value)
-  } finally {
-    uploading.value = false
-  }
-}
-
-async function discard() {
-  if (!resume.value) return
-  clearFeedback()
-  uploading.value = true
-  try {
-    resume.value = await discardResume(resume.value.id)
-    success.value = '已放弃本次解析，正式画像未改变'
-  } catch (value) {
-    error.value = errorMessage(value)
-  } finally {
-    uploading.value = false
-  }
-}
-
-function toggleSection(section: ProfileSection) {
-  if (selectedSections.value.includes(section)) {
-    selectedSections.value = selectedSections.value.filter((item) => item !== section)
-  } else {
-    selectedSections.value = [...selectedSections.value, section]
-  }
-}
-
-async function analyze() {
-  clearFeedback()
-  analyzing.value = true
-  try {
-    const result = await analyzeProfile()
-    analyses.value = [result, ...analyses.value]
-    selectedAnalysisId.value = result.id
-    success.value = 'AI 职业分析已完成并保存'
-    await loadMarket(targetRole.value)
-  } catch (value) {
-    error.value = errorMessage(value)
-  } finally {
-    analyzing.value = false
-  }
+function stageProgress(stage: RoadmapStage): number {
+  const completed = stage.tasks.filter(
+    (task) => task.status === 'completed',
+  ).length
+  return progressPercent(stage.tasks.length, completed)
 }
 
 function formatDate(value: string): string {
@@ -407,14 +323,214 @@ function friendly(value: string): string {
   return userFacingText(value).replace(/^【演示分析】\s*/, '')
 }
 
-function openEditor() {
-  activeTab.value = 'editor'
-  if (typeof window === 'undefined') return
-  window.requestAnimationFrame(() => {
-    document
-      .getElementById('profile-sources')
-      ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  })
+async function loadAnalysisHistory() {
+  const result = await listAnalyses()
+  analyses.value = result.items
+  if (!selectedAnalysisId.value && result.items.length) {
+    selectedAnalysisId.value = result.items[0].id
+  }
+}
+
+async function loadRevisions() {
+  const result = await listProfileRevisions()
+  revisions.value = result.items
+}
+
+async function loadMarket(role: string) {
+  marketError.value = ''
+  if (!role.trim()) {
+    marketOverview.value = null
+    return
+  }
+  marketLoading.value = true
+  try {
+    marketOverview.value = await getMarketOverview(role)
+  } catch (value) {
+    marketOverview.value = null
+    marketError.value = errorMessage(value)
+  } finally {
+    marketLoading.value = false
+  }
+}
+
+async function loadRoadmap() {
+  gapLoading.value = true
+  try {
+    const [roadmapResult, gapResult] = await Promise.allSettled([
+      getCurrentRoadmap(),
+      getSkillGap(),
+    ])
+    roadmap.value =
+      roadmapResult.status === 'fulfilled' ? roadmapResult.value.roadmap : null
+    roadmapGap.value = gapResult.status === 'fulfilled' ? gapResult.value : null
+  } finally {
+    gapLoading.value = false
+  }
+}
+
+async function loadPage() {
+  loading.value = true
+  error.value = ''
+  try {
+    const [profileResult, analysisResult, revisionResult] = await Promise.all([
+      getProfile(),
+      listAnalyses(),
+      listProfileRevisions(),
+    ])
+    profile.value = profileResult.profile
+    draft.value = profile.value
+      ? cloneData(profile.value.data)
+      : emptyProfileData()
+    analyses.value = analysisResult.items
+    revisions.value = revisionResult.items
+    if (!selectedAnalysisId.value && analyses.value.length) {
+      selectedAnalysisId.value = analyses.value[0].id
+    }
+  } catch (value) {
+    error.value = errorMessage(value)
+  } finally {
+    loading.value = false
+  }
+  if (profile.value) {
+    await Promise.all([loadMarket(targetRole.value), loadRoadmap()])
+  }
+}
+
+async function refreshPortraitData() {
+  await Promise.all([
+    loadAnalysisHistory(),
+    loadRevisions(),
+    loadMarket(targetRole.value),
+    loadRoadmap(),
+  ])
+}
+
+async function save() {
+  error.value = ''
+  saving.value = true
+  try {
+    profile.value = await saveProfile(draft.value)
+    draft.value = cloneData(profile.value.data)
+    toast.value = `职业画像已保存 · ${timeLabel()}`
+    await refreshPortraitData()
+  } catch (value) {
+    error.value = errorMessage(value)
+  } finally {
+    saving.value = false
+  }
+}
+
+async function removeProfile() {
+  if (!hasProfile.value) return
+  if (typeof window !== 'undefined' && !window.confirm('确认删除已保存的职业画像？')) {
+    return
+  }
+  error.value = ''
+  saving.value = true
+  try {
+    await deleteProfile()
+    profile.value = null
+    draft.value = emptyProfileData()
+    analyses.value = []
+    selectedAnalysisId.value = ''
+    revisions.value = []
+    marketOverview.value = null
+    roadmap.value = null
+    roadmapGap.value = null
+    toast.value = `职业画像已删除 · ${timeLabel()}`
+  } catch (value) {
+    error.value = errorMessage(value)
+  } finally {
+    saving.value = false
+  }
+}
+
+function onFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  selectedFile.value = input.files?.[0] ?? null
+}
+
+async function upload() {
+  if (!selectedFile.value) return
+  error.value = ''
+  uploading.value = true
+  try {
+    const result = await uploadResume(selectedFile.value)
+    resume.value = result
+    resumeDraft.value = cloneData(result.parsed_data)
+    selectedSections.value = PROFILE_SECTIONS.map(([value]) => value)
+    toast.value = `简历已解析，请审核后导入 · ${timeLabel()}`
+  } catch (value) {
+    error.value = errorMessage(value)
+    resume.value = null
+  } finally {
+    uploading.value = false
+  }
+}
+
+async function confirmImport() {
+  if (!resume.value || !selectedSections.value.length) {
+    error.value = '请选择至少一个要导入的区块'
+    return
+  }
+  error.value = ''
+  uploading.value = true
+  try {
+    profile.value = await confirmResume(
+      resume.value.id,
+      resumeDraft.value,
+      selectedSections.value,
+    )
+    draft.value = cloneData(profile.value.data)
+    resume.value = { ...resume.value, status: 'confirmed' }
+    toast.value = `已确认并写入职业画像 · ${timeLabel()}`
+    setTab('manage')
+    await refreshPortraitData()
+  } catch (value) {
+    error.value = errorMessage(value)
+  } finally {
+    uploading.value = false
+  }
+}
+
+async function discard() {
+  if (!resume.value) return
+  error.value = ''
+  uploading.value = true
+  try {
+    resume.value = await discardResume(resume.value.id)
+    toast.value = `已放弃本次解析，正式画像未改变 · ${timeLabel()}`
+  } catch (value) {
+    error.value = errorMessage(value)
+  } finally {
+    uploading.value = false
+  }
+}
+
+function toggleSection(section: ProfileSection) {
+  if (selectedSections.value.includes(section)) {
+    selectedSections.value = selectedSections.value.filter(
+      (item) => item !== section,
+    )
+  } else {
+    selectedSections.value = [...selectedSections.value, section]
+  }
+}
+
+async function analyze() {
+  error.value = ''
+  analyzing.value = true
+  try {
+    const result = await analyzeProfile()
+    analyses.value = [result, ...analyses.value]
+    selectedAnalysisId.value = result.id
+    toast.value = `AI 职业分析已完成 · ${timeLabel()}`
+    await Promise.all([loadMarket(targetRole.value), loadRoadmap()])
+  } catch (value) {
+    error.value = errorMessage(value)
+  } finally {
+    analyzing.value = false
+  }
 }
 
 onMounted(() => {
@@ -424,345 +540,62 @@ onMounted(() => {
 
 <template>
   <section class="page profile-page">
-    <header class="page-head profile-head">
-      <div class="page-head-copy">
-
-        <h2>你的职业画像</h2>
-        <p class="page-lede">
-          把经历、能力和目标放在一起，看到自己的方向与下一步。
-        </p>
-      </div>
-      <div class="page-head-actions">
-        <span class="badge">{{ hasProfile ? '画像已建立' : '尚未建立' }}</span>
-        <span v-if="profile" class="quiet-note">
-          更新于 {{ formatProfileDate(profile.updated_at) }}
-        </span>
-        <button
-          type="button"
-          class="button primary"
-          :disabled="analyzing || !hasProfile"
-          @click="analyze"
-        >
-          {{ analyzing ? '正在分析' : analysis ? '更新分析' : '生成分析' }}
-        </button>
-        <RouterLink to="/market" class="button ghost">查看市场洞察</RouterLink>
-      </div>
+    <header class="page-head profile-v2-head">
+      <template v-if="loading">
+        <div class="profile-v2-identity">
+          <div class="skeleton skeleton-avatar"></div>
+          <div style="display: flex; flex-direction: column; gap: 8px">
+            <div class="skeleton skeleton-line lg" style="width: 220px"></div>
+            <div class="skeleton skeleton-line sm" style="width: 320px"></div>
+          </div>
+        </div>
+        <div class="skeleton skeleton-line md" style="width: 140px; height: 28px"></div>
+      </template>
+      <template v-else>
+        <div class="profile-v2-identity">
+          <span class="profile-avatar">{{ initial }}</span>
+          <div>
+            <h2>Profile <span class="page-title-cn">职业画像</span></h2>
+            <p class="page-lede">{{ identityLine }}</p>
+          </div>
+        </div>
+        <div class="profile-completion">
+          <strong class="stat-number">{{ completion }}%</strong>
+          <span class="quiet-note">画像完善度<br />按已确认资料计算</span>
+        </div>
+      </template>
     </header>
 
-    <ErrorNotice
-      v-if="error"
-      :error="{ code: 'PROFILE_ERROR', message: error }"
-      @dismiss="error = ''"
-    />
-    <p v-if="success" class="success-note">{{ success }}</p>
+    <div class="legend-row">
+      <span class="tag tag-fact">已确认事实</span>
+      <span class="tag tag-evidence">客观能力证据</span>
+      <span class="tag tag-inference">AI 推断 · 待确认</span>
+      <span class="tag tag-suggestion">AI 建议</span>
+      <span class="quiet-note">标签说明信息来源与可信度</span>
+    </div>
 
-    <div v-if="loading" class="loading-state">正在加载职业画像…</div>
+    <PageSkeleton v-if="loading" variant="profile" />
 
     <template v-else>
-      <div v-if="!profile" class="empty-state">
-        <h3>建立你的第一份职业画像</h3>
-        <p>从基本信息、技能和一段经历开始，之后逐步补充证据。</p>
-        <button type="button" class="button primary" @click="openEditor">
-          开始补充资料
-        </button>
-      </div>
+      <ErrorNotice
+        v-if="error"
+        :error="{ code: 'PROFILE_ERROR', message: error }"
+        retryable
+        @dismiss="error = ''"
+        @retry="loadPage"
+      />
 
-      <template v-else>
-        <div class="profile-top">
-          <section class="profile-overview">
-            <div class="section-heading">
-              <h3>职业概览</h3>
-              <span class="tag">{{ analysisModeLabel }}</span>
-            </div>
-            <p v-if="analysis" class="profile-statement">
-              {{ friendly(analysis.analysis.overview) }}
-            </p>
-            <ul v-else class="fact-list">
-              <li v-for="fact in facts" :key="fact">{{ friendly(fact) }}</li>
-              <li v-if="!facts.length">资料较少，还没有形成清晰的定位。</li>
-            </ul>
-            <p class="note">
-              {{
-                analysis
-                  ? '基于已确认画像生成；事实、推断与建议在下方分开标注。'
-                  : '这里展示的是已确认资料，不是 AI 结论。'
-              }}
-            </p>
-          </section>
-
-          <section class="direction-panel">
-            <div class="section-heading">
-              <h3>职业方向</h3>
-            </div>
-            <dl class="direction-list">
-              <div>
-                <dt>目标岗位</dt>
-                <dd>{{ profile.data.goals.target_role || '尚未设置' }}</dd>
-              </div>
-              <div>
-                <dt>目标行业</dt>
-                <dd>{{ profile.data.goals.target_industry || '尚未设置' }}</dd>
-              </div>
-              <div>
-                <dt>求职状态</dt>
-                <dd>{{ profile.data.goals.job_status || '尚未设置' }}</dd>
-              </div>
-              <div>
-                <dt>期望方向</dt>
-                <dd>{{ profile.data.goals.desired_direction || '尚未设置' }}</dd>
-              </div>
-            </dl>
-            <div v-if="analysis?.analysis.directions.length" class="direction-claims">
-              <h4>可探索方向</h4>
-              <ul class="claim-list">
-                <li
-                  v-for="(item, index) in analysis.analysis.directions"
-                  :key="index"
-                >
-                  <span class="tag">{{ BASIS_LABELS[item.basis] }}</span>
-                  {{ friendly(item.statement) }}
-                </li>
-              </ul>
-            </div>
-            <p v-else class="note">
-              暂无方向建议；设置目标岗位并积累证据后，会更有依据。
-            </p>
-          </section>
+      <template v-if="!profile">
+        <div class="state-card">
+          <h3>建立你的第一份职业画像</h3>
+          <p>从基本信息、技能和一段经历开始，之后逐步补充证据。</p>
         </div>
-
-        <section class="section-block">
-          <div class="section-heading">
-            <h3>能力结构</h3>
-            <span class="note">熟练度为自评</span>
-          </div>
-          <p v-if="!profile.data.skills.length" class="note">
-            还没有技能记录，可以在资料管理中补充。
-          </p>
-          <div
-            v-for="group in skillGroups"
-            :key="group.category"
-            class="skill-group"
-          >
-            <h4>{{ group.category }}</h4>
-            <div class="skill-grid">
-              <article
-                v-for="skill in group.skills"
-                :key="skill.id"
-                class="skill-card"
-              >
-                <div class="skill-card-head">
-                  <strong class="skill-name">{{ friendly(skill.name || '未命名技能') }}</strong>
-                  <span class="tag">
-                    {{ friendly(proficiencyLabel(skill.proficiency)) }}
-                  </span>
-                </div>
-                <p class="skill-evidence">{{ friendly(evidenceLabel(skill)) }}</p>
-                <div class="skill-meta">
-                  <span>{{ sourceLabel(skill.source) }}</span>
-                  <span>{{ verificationLabel(skill.verification) }}</span>
-                  <span>
-                    {{ skill.updated_at ? `更新 ${formatProfileDate(skill.updated_at)}` : '更新时间未记录' }}
-                  </span>
-                </div>
-              </article>
+        <section class="card profile-v2-card" style="margin-top: 18px">
+          <div class="profile-v2-card-head">
+            <div>
+              <h3>补充资料</h3>
+              <p>保存即确认，并记录第一个资料版本。</p>
             </div>
-          </div>
-        </section>
-
-        <div class="profile-split">
-          <section class="section-block">
-            <div class="section-heading">
-              <h3>已有优势</h3>
-            </div>
-            <ul v-if="analysis?.analysis.strengths.length" class="claim-list">
-              <li
-                v-for="(item, index) in analysis.analysis.strengths"
-                :key="index"
-              >
-                <span class="tag">{{ BASIS_LABELS[item.basis] }}</span>
-                <span class="tag tag-muted">
-                  {{ CONFIDENCE_LABELS[item.confidence] }}
-                </span>
-                {{ friendly(item.statement) }}
-              </li>
-            </ul>
-            <p v-else class="note">尚无足够证据形成优势判断。</p>
-          </section>
-
-          <section class="section-block">
-            <div class="section-heading">
-              <h3>待提升能力</h3>
-            </div>
-            <ul v-if="analysis?.analysis.gaps.length" class="claim-list">
-              <li v-for="(item, index) in analysis.analysis.gaps" :key="index">
-                <span class="tag">{{ BASIS_LABELS[item.basis] }}</span>
-                <span class="tag tag-muted">
-                  {{ CONFIDENCE_LABELS[item.confidence] }}
-                </span>
-                {{ friendly(item.statement) }}
-              </li>
-            </ul>
-            <p v-else class="note">暂无分析结论；没有证据时不做短板判断。</p>
-          </section>
-        </div>
-
-        <section class="section-block unknown-block">
-          <div class="section-heading">
-            <h3>未知信息</h3>
-            <span class="tag tag-muted">待补充</span>
-          </div>
-          <ul v-if="unknownItems.length" class="unknown-list">
-            <li v-for="item in unknownItems" :key="item">{{ friendly(item) }}</li>
-          </ul>
-          <p v-else class="note">暂无明显未知项。</p>
-        </section>
-
-        <section class="market-match" data-testid="profile-market-match">
-          <div class="section-heading">
-            <h3>市场匹配</h3>
-            <span class="tag">{{ marketDatasetLabel }}</span>
-          </div>
-          <p v-if="!targetRole" class="note">
-            先设置目标岗位，才能按方向查看市场要求。
-          </p>
-          <p v-else-if="marketLoading" class="note">正在读取市场数据…</p>
-          <p v-else-if="marketError" class="note warning-text">
-            暂时无法读取市场数据，画像本身不受影响。
-          </p>
-          <template v-else-if="marketOverview && marketMeta">
-            <div class="market-match-meta">
-              <span>样本 {{ marketMeta.sample_size }} 条</span>
-              <span>
-                统计周期 {{ formatProfileDate(marketMeta.period_start) }}–{{ formatProfileDate(marketMeta.period_end) }}
-              </span>
-              <span>来源 {{ marketSources || '未记录' }}</span>
-              <span class="tag">
-                {{ marketMeta.sample_sufficient ? '样本达标' : '样本量较少' }}
-              </span>
-            </div>
-            <p v-if="datasetNote || sampleNote" class="market-warning">
-              {{ [datasetNote, sampleNote].filter(Boolean).join(' · ') }}
-            </p>
-            <p v-if="marketOverview.total_jobs === 0" class="note">
-              当前方向暂无市场样本，不能据此判断能力差距。
-            </p>
-            <div v-else class="match-columns">
-              <div>
-                <h4>市场高频技能</h4>
-                <ul class="match-list">
-                  <li v-for="item in demandSkills" :key="item.skill">
-                    <span>{{ item.rank }}. {{ item.skill }}</span>
-                    <strong>{{ item.count }}</strong>
-                  </li>
-                </ul>
-              </div>
-              <div>
-                <h4>画像已记录</h4>
-                <ul v-if="skillGap.matched.length" class="match-list">
-                  <li v-for="item in skillGap.matched" :key="item">
-                    <span>{{ friendly(item) }}</span>
-                    <span class="tag">已记录</span>
-                  </li>
-                </ul>
-                <p v-else class="note">尚未记录市场高频技能。</p>
-              </div>
-              <div>
-                <h4>未记录的需求技能</h4>
-                <ul v-if="skillGap.notRecorded.length" class="match-list">
-                  <li v-for="item in skillGap.notRecorded" :key="item">
-                    <span>{{ friendly(item) }}</span>
-                    <span class="tag tag-muted">未记录</span>
-                  </li>
-                </ul>
-                <p v-else class="note">高频技能均已记录。</p>
-                <p class="note">
-                  未记录不等于不具备；这里只做需求对比，不做能力评分。
-                </p>
-              </div>
-            </div>
-            <p class="note">统计口径为导入岗位计数，仅用于方向参考。</p>
-          </template>
-          <p v-else class="note">当前没有可展示的市场统计。</p>
-        </section>
-
-        <section class="section-block">
-          <div class="section-heading">
-            <h3>成长记录</h3>
-            <span class="tag tag-muted">版本历史</span>
-          </div>
-          <p v-if="!revisions.length" class="note">
-            尚无版本记录；下次保存画像后开始记录。
-          </p>
-          <ol v-else class="revision-list">
-            <li v-for="revision in revisions" :key="revision.id">
-              <span class="tag">v{{ revision.version }}</span>
-              <span>
-                {{ CHANGE_SOURCE_LABELS[revision.change_source] ?? revision.change_source }}
-              </span>
-              <time>{{ formatProfileDate(revision.created_at) }}</time>
-            </li>
-          </ol>
-          <div v-if="growthItems.length" class="growth-list">
-            <h4>项目与经历</h4>
-            <ul>
-              <li v-for="item in growthItems" :key="item.label">
-                <strong>{{ friendly(item.label) }}</strong>
-                <span v-if="item.meta">{{ friendly(item.meta) }}</span>
-              </li>
-            </ul>
-          </div>
-          <div v-if="profile.data.skills.length" class="growth-skills">
-            <h4>技能更新时间</h4>
-            <ul>
-              <li v-for="skill in profile.data.skills" :key="skill.id">
-                <span>{{ skill.name || '未命名技能' }}</span>
-                <span>{{ skill.updated_at ? formatProfileDate(skill.updated_at) : '未记录' }}</span>
-              </li>
-            </ul>
-          </div>
-        </section>
-      </template>
-    </template>
-
-    <section id="profile-sources" class="profile-aux">
-      <div class="profile-aux-head">
-        <div>
-          <h3>资料管理</h3>
-          <p>维护画像来源、简历与历史分析；未经确认的内容不会写入画像。</p>
-        </div>
-      </div>
-
-      <div class="profile-tabs" role="tablist" aria-label="资料管理">
-        <button
-          v-for="tab in tabs"
-          :key="tab.value"
-          type="button"
-          class="profile-tab"
-          :class="{ 'is-active': activeTab === tab.value }"
-          role="tab"
-          :aria-selected="activeTab === tab.value"
-          @click="activeTab = tab.value"
-        >
-          {{ tab.label }}
-        </button>
-      </div>
-
-      <section v-if="activeTab === 'editor'" class="profile-panel">
-        <div class="profile-panel-head">
-          <div>
-            <h3>资料编辑</h3>
-            <p>保存即确认并生成新的画像版本。</p>
-          </div>
-          <div class="page-head-actions">
-            <button
-              v-if="hasProfile"
-              type="button"
-              class="button danger"
-              :disabled="saving"
-              @click="removeProfile"
-            >
-              删除画像
-            </button>
             <button
               type="button"
               class="button primary"
@@ -772,205 +605,671 @@ onMounted(() => {
               {{ saving ? '正在保存' : '保存画像' }}
             </button>
           </div>
-        </div>
-        <p v-if="!hasProfile" class="note">
-          还没有正式职业画像，可以手动填写或上传一份虚构测试简历。
-        </p>
-        <ProfileEditor v-model="draft" />
-      </section>
+          <ProfileEditor v-model="draft" collapsible />
+        </section>
+      </template>
 
-      <section v-else-if="activeTab === 'resume'" class="profile-panel">
-        <div class="profile-panel-head">
-          <div>
-            <h3>简历解析</h3>
-            <p>支持 PDF / DOCX，解析结果需要你确认后才会进入画像。</p>
-          </div>
-        </div>
-        <div class="upload-box">
-          <label class="field">
-            <span>虚构测试简历文件（≤10MB）</span>
-            <input
-              type="file"
-              accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-              aria-label="简历文件"
-              @change="onFileChange"
-            />
-          </label>
+      <template v-else>
+        <div class="profile-v2-tabs" role="tablist" aria-label="职业画像标签">
           <button
+            v-for="tab in TABS"
+            :key="tab.id"
             type="button"
-            class="button primary"
-            :disabled="!selectedFile || uploading"
-            @click="upload"
+            class="profile-v2-tab"
+            :class="{ 'is-active': activeTab === tab.id }"
+            role="tab"
+            :aria-selected="activeTab === tab.id"
+            @click="setTab(tab.id)"
           >
-            {{ uploading ? '正在解析' : '上传并解析' }}
+            <strong>{{ tab.en }}</strong>
+            <span>{{ tab.cn }}</span>
           </button>
         </div>
 
-        <div v-if="resume" class="resume-review">
-          <div class="resume-meta">
-            <strong>{{ resume.original_filename }}</strong>
-            <span>{{ fileSize(resume.file_size) }}</span>
-            <span class="tag">{{ resumeModeLabel }}</span>
-            <span class="tag tag-muted">{{ resumeStatusLabel }}</span>
-          </div>
-          <p v-if="resume.parse_mode === 'mock'" class="resume-warning">
-            当前为演示解析，结果仅用于体验，请核对后导入。
-          </p>
-          <div class="section-choice">
-            <span>选择要导入的区块</span>
-            <label v-for="[value, label] in PROFILE_SECTIONS" :key="value">
-              <input
-                type="checkbox"
-                :checked="selectedSections.includes(value)"
-                @change="toggleSection(value)"
-              />
-              {{ label }}
-            </label>
-          </div>
-          <ProfileEditor v-model="resumeDraft" />
-          <div class="resume-actions">
-            <button
-              type="button"
-              class="button ghost"
-              :disabled="uploading || resume.status !== 'pending_review'"
-              @click="discard"
-            >
-              放弃本次解析
-            </button>
+        <div v-if="activeTab === 'overview'" class="profile-v2-body">
+          <section class="card profile-v2-card">
+            <div class="profile-v2-card-head">
+              <div>
+                <h3>基本信息</h3>
+                <p>由你填写，只记录事实。</p>
+              </div>
+              <span class="tag tag-fact">已确认事实</span>
+            </div>
+            <dl class="profile-fact-grid">
+              <div v-for="fact in basicFacts" :key="fact.label" class="profile-fact">
+                <dt>{{ fact.label }}</dt>
+                <dd>{{ fact.value }}</dd>
+              </div>
+            </dl>
+            <div class="profile-overview-counts">
+              <span>教育经历 {{ profile.data.education.length }} 段</span>
+              <span>项目 {{ profile.data.projects.length }} 个</span>
+              <span>工作 / 实习 {{ profile.data.experiences.length }} 段</span>
+              <span>技能 {{ profile.data.skills.length }} 项</span>
+            </div>
+            <p class="note">
+              以上计数与「资料管理」读取同一份画像数据；若两处不一致，属于数据源问题，需要核对。
+            </p>
             <button
               type="button"
               class="button primary"
-              :disabled="uploading || resume.status !== 'pending_review'"
-              @click="confirmImport"
+              style="margin-top: 18px"
+              @click="setTab('manage')"
             >
-              {{ uploading ? '正在处理' : '确认导入所选区块' }}
+              编辑基本信息
             </button>
-          </div>
-        </div>
-        <p v-else class="note">还没有待审核解析结果。</p>
-      </section>
+          </section>
 
-      <section v-else class="profile-panel">
-        <div class="profile-panel-head">
-          <div>
-            <h3>AI 分析</h3>
-            <p>分析基于已确认画像，历史版本会保留。</p>
-          </div>
-          <button
-            type="button"
-            class="button primary"
-            :disabled="analyzing || !hasProfile"
-            @click="analyze"
-          >
-            {{ analyzing ? '正在分析' : hasProfile ? '重新分析' : '请先保存画像' }}
-          </button>
-        </div>
-
-        <div v-if="selectedAnalysis" class="analysis-layout">
-          <aside class="analysis-history">
-            <h4>历史分析</h4>
-            <button
-              v-for="item in analyses"
-              :key="item.id"
-              type="button"
-              class="analysis-history-item"
-              :class="{ 'is-active': item.id === selectedAnalysisId }"
-              @click="selectedAnalysisId = item.id"
-            >
-              <span>{{ formatDate(item.created_at) }}</span>
-              <small>{{ analysisHistoryLabel(item) }}</small>
-            </button>
-          </aside>
-          <article class="analysis-detail">
-            <div class="analysis-meta">
-              <span class="tag">
-                {{ selectedAnalysis.llm_mode === 'mock' ? '演示分析' : 'AI 分析' }}
-              </span>
-              <time>{{ formatDate(selectedAnalysis.created_at) }}</time>
-            </div>
-            <section class="analysis-section">
-              <h4>能力概况</h4>
-              <p>{{ friendly(selectedAnalysis.analysis.overview) }}</p>
-            </section>
-            <section class="analysis-section">
-              <h4>优势</h4>
-              <ul>
-                <li
-                  v-for="(item, index) in selectedAnalysis.analysis.strengths"
-                  :key="index"
-                >
-                  <span class="tag">{{ BASIS_LABELS[item.basis] }}</span>
-                  <span class="tag tag-muted">{{ CONFIDENCE_LABELS[item.confidence] }}</span>
-                  {{ friendly(item.statement) }}
-                </li>
-              </ul>
-            </section>
-            <section class="analysis-section">
-              <h4>待提升</h4>
-              <ul>
-                <li
-                  v-for="(item, index) in selectedAnalysis.analysis.gaps"
-                  :key="index"
-                >
-                  <span class="tag">{{ BASIS_LABELS[item.basis] }}</span>
-                  <span class="tag tag-muted">{{ CONFIDENCE_LABELS[item.confidence] }}</span>
-                  {{ friendly(item.statement) }}
-                </li>
-              </ul>
-            </section>
-            <section class="analysis-section">
-              <h4>与目标岗位的匹配</h4>
-              <p>{{ friendly(selectedAnalysis.analysis.fit.summary) }}</p>
-              <ul>
-                <li
-                  v-for="(item, index) in selectedAnalysis.analysis.fit.evidence"
-                  :key="index"
-                >
-                  {{ friendly(item) }}
-                </li>
-              </ul>
-              <p v-if="selectedAnalysis.analysis.fit.uncertainty.length" class="note">
-                不确定性：{{ friendly(selectedAnalysis.analysis.fit.uncertainty.join('；')) }}
+          <div class="profile-overview-grid">
+            <section class="card profile-v2-card">
+              <div class="profile-v2-card-head">
+                <div>
+                  <h3>AI 对你的判断</h3>
+                  <p>基于已确认画像，推断与建议分开标注。</p>
+                </div>
+                <span v-if="analysis" class="tag tag-inference">AI 推断 · 待确认</span>
+              </div>
+              <template v-if="analysis">
+                <p>{{ analysisShort }}</p>
+                <details class="profile-ai-fold">
+                  <summary>展开完整分析</summary>
+                  <p>{{ friendly(analysisText) }}</p>
+                </details>
+              </template>
+              <p v-else class="note">
+                还没有 AI 分析；生成后会在这里给出判断，不会自动写入正式画像。
               </p>
+              <button
+                v-if="!analysis"
+                type="button"
+                class="button secondary small"
+                :disabled="analyzing || !hasProfile"
+                @click="analyze"
+              >
+                {{ analyzing ? '正在分析' : '生成分析' }}
+              </button>
             </section>
-            <section class="analysis-section">
-              <h4>值得探索的方向</h4>
-              <ul>
-                <li
-                  v-for="(item, index) in selectedAnalysis.analysis.directions"
-                  :key="index"
-                >
-                  <span class="tag">{{ BASIS_LABELS[item.basis] }}</span>
-                  {{ friendly(item.statement) }}
-                </li>
-              </ul>
-            </section>
-            <section class="analysis-section">
-              <h4>建议补充的信息</h4>
-              <ul>
-                <li
-                  v-for="(item, index) in selectedAnalysis.analysis.missing_information"
-                  :key="index"
-                >
-                  {{ friendly(item) }}
-                </li>
-              </ul>
-            </section>
-            <section class="analysis-section">
-              <h4>下一步行动</h4>
-              <ol>
-                <li
-                  v-for="(item, index) in selectedAnalysis.analysis.next_actions"
-                  :key="index"
-                >
+
+            <section class="card profile-v2-card">
+              <div class="profile-v2-card-head">
+                <div>
+                  <h3>{{ nextActionsTitle }}</h3>
+                  <p>来自最近一次分析。</p>
+                </div>
+                <span v-if="nextActions.length" class="tag tag-suggestion">AI 建议</span>
+              </div>
+              <ol v-if="nextActions.length" class="profile-mini-list">
+                <li v-for="(item, index) in nextActions" :key="index">
                   {{ friendly(item) }}
                 </li>
               </ol>
+              <p v-else class="note">还没有建议；完成分析后会出现在这里。</p>
             </section>
-          </article>
+          </div>
+
+          <section class="card profile-v2-card">
+            <div class="profile-v2-card-head">
+              <div>
+                <h3>最近动态</h3>
+                <p>画像与资料版本的变化会记在这里。</p>
+              </div>
+              <span class="tag tag-muted">资料 v{{ revisions[0]?.version ?? 1 }}</span>
+            </div>
+            <div v-if="recentRevisions.length">
+              <div
+                v-for="revision in recentRevisions"
+                :key="revision.id"
+                class="profile-growth-row"
+              >
+                <span
+                  class="tag"
+                  :class="revision.change_source === 'resume' ? 'tag-evidence' : 'tag-fact'"
+                >
+                  {{ revision.change_source === 'resume' ? '有记录' : '事实' }}
+                </span>
+                <span>
+                  {{ CHANGE_SOURCE_LABELS[revision.change_source] ?? revision.change_source }}
+                  · v{{ revision.version }}
+                </span>
+                <time>{{ formatProfileDate(revision.created_at) }}</time>
+              </div>
+            </div>
+            <p v-else class="note">尚无版本记录；保存画像后开始记录。</p>
+          </section>
         </div>
-        <p v-else class="note">还没有职业分析，先保存画像再生成。</p>
-      </section>
-    </section>
+
+        <div v-else-if="activeTab === 'skills'" class="profile-v2-body">
+          <section class="card profile-v2-card">
+            <div class="profile-v2-card-head">
+              <div>
+                <h3>能力与兴趣</h3>
+                <p>熟练度为自评；标签表示来源与确认状态。</p>
+              </div>
+              <span class="tag tag-muted">{{ skills.length }} 项技能</span>
+            </div>
+            <div v-if="skills.length">
+              <div v-for="skill in skills" :key="skill.id" class="skill-row">
+                <div>
+                  <div class="skill-row-name">
+                    {{ friendly(skill.name || '未命名技能') }}
+                  </div>
+                  <div class="skill-row-evidence">
+                    {{ friendly(evidenceLabel(skill)) }} ·
+                    {{ skill.category || '未分类' }}
+                  </div>
+                </div>
+                <div>
+                  <div class="skill-level">
+                    <span :style="{ width: `${skillLevelWidth(skill)}%` }"></span>
+                  </div>
+                  <span class="quiet-note">
+                    自评 · {{ proficiencyLabel(skill.proficiency) }}
+                  </span>
+                </div>
+                <span class="tag" :class="skillTagClass(skill)">
+                  {{ skillTagLabel(skill) }}
+                </span>
+              </div>
+            </div>
+            <div v-else class="state-card">
+              <h3>还没有技能记录</h3>
+              <p>在资料管理中补充技能与证据，市场匹配会随之更新。</p>
+              <button
+                type="button"
+                class="button primary"
+                @click="setTab('manage')"
+              >
+                去补充技能
+              </button>
+            </div>
+          </section>
+
+          <section class="card profile-v2-card">
+            <div class="profile-v2-card-head">
+              <div>
+                <h3>可探索方向</h3>
+                <p>AI 基于画像给出的方向，默认不写入正式画像。</p>
+              </div>
+              <span class="tag tag-inference">AI 推断 · 待确认</span>
+            </div>
+            <ul v-if="directions.length" class="claim-list">
+              <li v-for="(item, index) in directions" :key="index">
+                <span class="tag" :class="basisTagClass(item.basis)">
+                  {{ basisLabel(item.basis) }}
+                </span>
+                {{ friendly(item.statement) }}
+              </li>
+            </ul>
+            <p v-else class="note">
+              还没有方向建议；生成分析后会出现在这里。
+            </p>
+          </section>
+
+          <section class="card profile-v2-card">
+            <div class="profile-v2-card-head">
+              <div>
+                <h3>AI 能力分析</h3>
+                <p>长文默认收起，只显示结论。</p>
+              </div>
+              <button type="button" class="link-button" @click="setTab('manage')">
+                查看分析历史
+              </button>
+            </div>
+            <template v-if="analysis">
+              <p>{{ analysisShort }}</p>
+              <details class="profile-ai-fold">
+                <summary>展开优势与待提升</summary>
+                <div class="profile-claim-grid">
+                  <div>
+                    <h4>已有优势</h4>
+                    <ul v-if="strengths.length" class="claim-list">
+                      <li v-for="(item, index) in strengths" :key="index">
+                        <span class="tag" :class="basisTagClass(item.basis)">
+                          {{ basisLabel(item.basis) }}
+                        </span>
+                        {{ friendly(item.statement) }}
+                      </li>
+                    </ul>
+                    <p v-else class="note">尚无足够证据形成优势判断。</p>
+                  </div>
+                  <div>
+                    <h4>待提升</h4>
+                    <ul v-if="gaps.length" class="claim-list">
+                      <li v-for="(item, index) in gaps" :key="index">
+                        <span class="tag" :class="basisTagClass(item.basis)">
+                          {{ basisLabel(item.basis) }}
+                        </span>
+                        {{ friendly(item.statement) }}
+                      </li>
+                    </ul>
+                    <p v-else class="note">暂无分析结论。</p>
+                  </div>
+                </div>
+              </details>
+            </template>
+            <p v-else class="note">还没有分析结论。</p>
+          </section>
+        </div>
+
+        <div v-else-if="activeTab === 'market'" class="profile-v2-body">
+          <section class="card profile-v2-card" data-testid="profile-market-match">
+            <div class="profile-v2-card-head">
+              <div>
+                <h3>市场匹配</h3>
+                <p>只做摘要与链接，不重复计算完整差距。</p>
+              </div>
+              <span class="tag">{{ marketDatasetLabel }}</span>
+            </div>
+
+            <p v-if="!targetRole" class="note">
+              先设置目标岗位，才能按方向查看市场要求。
+            </p>
+            <p v-else-if="marketLoading" class="note">正在读取市场数据…</p>
+            <p v-else-if="gapLoading" class="note">正在读取目标岗位技能差距…</p>
+            <p v-else-if="marketError" class="note warning-text">
+              暂时无法读取市场数据，画像本身不受影响。
+            </p>
+
+            <template v-else-if="marketOverview && marketMeta">
+              <div class="market-match-meta">
+                <span>目标 {{ targetRole }}</span>
+                <span>样本 {{ marketMeta.sample_size }} 条</span>
+                <span data-testid="profile-gap-coverage">
+                  目标岗位需求技能已记录 {{ coverage.matched }} / {{ coverage.total }}
+                </span>
+                <span
+                  class="tag"
+                  :class="marketMeta.sample_sufficient ? 'tag-evidence' : 'tag-inference'"
+                >
+                  {{ marketMeta.sample_sufficient ? '样本达标' : '样本量较少' }}
+                </span>
+              </div>
+              <p class="note">
+                来源 {{ marketSources || '未记录' }} · 统计口径为导入岗位计数，仅用于方向参考。
+              </p>
+
+              <div v-if="conflicts.length" class="conflict-card">
+                <h4>冲突确认：画像与差距接口不一致</h4>
+                <p class="note">
+                  同一技能在两处结果不同。请核对来源后再决定，前端不会隐藏或改数。
+                </p>
+                <div class="conflict-grid">
+                  <div v-for="item in conflicts" :key="item.skill" class="conflict-side">
+                    <strong>画像技能列表</strong>{{ item.skill }}（已记录）
+                    <hr style="border: 0; border-top: 1px solid var(--border); margin: 8px 0" />
+                    <strong>差距接口</strong>{{ item.gap.name }}（未记录，需求占比
+                    {{ Math.round(item.gap.market_share * 100) }}%）
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  class="button secondary small"
+                  @click="setTab('manage')"
+                >
+                  去资料管理核对
+                </button>
+              </div>
+
+              <div class="market-role-grid">
+                <article
+                  v-for="roleItem in roleCards"
+                  :key="roleItem.name"
+                  class="card profile-v2-card"
+                >
+                  <h4>{{ roleItem.name }}</h4>
+                  <p class="note">
+                    {{ roleItem.count }} 条岗位 · 占样本
+                    {{ Math.round(roleItem.share * 100) }}%
+                  </p>
+                  <RouterLink to="/roadmap" class="link-button">
+                    查看差距
+                  </RouterLink>
+                </article>
+              </div>
+
+              <div v-if="gapTop.length" class="profile-gap-summary">
+                <h4>优先补齐</h4>
+                <div
+                  v-for="item in gapTop"
+                  :key="item.name"
+                  class="profile-growth-row"
+                >
+                  <span>{{ item.name }}</span>
+                  <span class="quiet-note">
+                    {{ Math.round(item.market_share * 100) }}% 需求
+                  </span>
+                </div>
+                <RouterLink to="/roadmap" class="link-button">
+                  去成长路线查看完整差距
+                </RouterLink>
+              </div>
+              <p v-else class="note">当前没有可展示的差距摘要。</p>
+            </template>
+            <p v-else class="note">当前没有可展示的市场统计。</p>
+          </section>
+        </div>
+
+        <div v-else-if="activeTab === 'growth'" class="profile-v2-body">
+          <section class="card profile-v2-card">
+            <div class="profile-v2-card-head">
+              <div>
+                <h3>成长记录</h3>
+                <p>
+                  阶段来自当前正式路线；点击查看对应阶段。
+                  <template v-if="routeSummary">（{{ routeSummary }}）</template>
+                </p>
+              </div>
+              <RouterLink to="/roadmap" class="link-button">去成长路线</RouterLink>
+            </div>
+            <div v-if="growthStages.length">
+              <RouterLink
+                v-for="(stage, index) in growthStages"
+                :key="stage.id"
+                :to="{ path: '/roadmap', query: { stage: stage.id } }"
+                class="profile-growth-row"
+              >
+                <span class="stage-index">{{ index + 1 }}</span>
+                <span class="profile-growth-copy">
+                  <strong>{{ stage.title }}</strong>
+                  <span>{{ stage.duration || '时间未记录' }}</span>
+                </span>
+                <span
+                  class="tag"
+                  :class="stageProgress(stage) === 100 ? 'tag-evidence' : 'tag'"
+                >
+                  {{ stageProgress(stage) }}%
+                </span>
+              </RouterLink>
+            </div>
+            <p v-else class="note">
+              还没有正式成长路线；生成后会在这里按阶段展示。
+            </p>
+          </section>
+
+          <section class="card profile-v2-card">
+            <div class="profile-v2-card-head">
+              <div>
+                <h3>资料版本</h3>
+                <p>
+                  每次保存或导入都会留下版本，旧版本只读保留。
+                  资料版本与路线版本是两套独立记录，不可直接比较。
+                </p>
+              </div>
+              <span class="tag tag-muted">资料 v{{ revisions[0]?.version ?? 1 }}</span>
+            </div>
+            <div v-if="revisions.length">
+              <div
+                v-for="revision in revisions"
+                :key="revision.id"
+                class="profile-growth-row"
+              >
+                <span class="tag">v{{ revision.version }}</span>
+                <span>
+                  {{ CHANGE_SOURCE_LABELS[revision.change_source] ?? revision.change_source }}
+                </span>
+                <time>{{ formatProfileDate(revision.created_at) }}</time>
+              </div>
+            </div>
+            <p v-else class="note">尚无版本记录。</p>
+          </section>
+        </div>
+
+        <div v-else class="profile-v2-body">
+          <section class="card profile-v2-card">
+            <div class="profile-v2-card-head">
+              <div>
+                <h3>Manage Profile</h3>
+                <p>资料管理是唯一可编辑画像的地方；保存即确认并生成新版本。</p>
+              </div>
+              <div class="page-head-actions">
+                <button
+                  v-if="hasProfile"
+                  type="button"
+                  class="button danger small"
+                  :disabled="saving"
+                  @click="removeProfile"
+                >
+                  删除画像
+                </button>
+                <button
+                  type="button"
+                  class="button primary"
+                  :disabled="saving"
+                  @click="save"
+                >
+                  {{ saving ? '正在保存' : '保存画像' }}
+                </button>
+              </div>
+            </div>
+            <p v-if="!hasProfile" class="note">
+              还没有正式职业画像，可以手动填写或上传一份虚构测试简历。
+            </p>
+            <ProfileEditor v-model="draft" collapsible />
+          </section>
+
+          <section class="card profile-v2-card">
+            <details>
+              <summary class="profile-subsection-summary">
+                <h3>简历导入</h3>
+                <span class="quiet-note">解析后需确认</span>
+              </summary>
+              <p class="note">
+                支持 PDF / DOCX，解析结果需要你确认后才会进入画像。
+              </p>
+              <div class="upload-box">
+                <label class="field">
+                  <span>虚构测试简历文件（≤10MB）</span>
+                  <input
+                    type="file"
+                    accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    aria-label="简历文件"
+                    @change="onFileChange"
+                  />
+                </label>
+                <button
+                  type="button"
+                  class="button secondary"
+                  :disabled="!selectedFile || uploading"
+                  @click="upload"
+                >
+                  {{ uploading ? '正在解析' : '上传并解析' }}
+                </button>
+              </div>
+
+              <div v-if="resume" class="resume-review">
+                <div class="resume-meta">
+                  <strong>{{ resume.original_filename }}</strong>
+                  <span>{{ fileSize(resume.file_size) }}</span>
+                  <span class="tag">{{ resume.parse_mode === 'mock' ? '演示解析' : '解析结果' }}</span>
+                  <span class="tag tag-muted">
+                    {{ resume.status === 'pending_review' ? '待确认' : resume.status }}
+                  </span>
+                </div>
+                <p v-if="resume.parse_mode === 'mock'" class="resume-warning">
+                  当前为演示解析，结果仅用于体验，请核对后导入。
+                </p>
+                <div class="section-choice">
+                  <span>选择要导入的区块</span>
+                  <label v-for="[value, label] in PROFILE_SECTIONS" :key="value">
+                    <input
+                      type="checkbox"
+                      :checked="selectedSections.includes(value)"
+                      @change="toggleSection(value)"
+                    />
+                    {{ label }}
+                  </label>
+                </div>
+                <ProfileEditor v-model="resumeDraft" />
+                <div class="resume-actions">
+                  <button
+                    type="button"
+                    class="button ghost"
+                    :disabled="uploading || resume.status !== 'pending_review'"
+                    @click="discard"
+                  >
+                    放弃本次解析
+                  </button>
+                  <button
+                    type="button"
+                    class="button secondary"
+                    :disabled="uploading || resume.status !== 'pending_review'"
+                    @click="confirmImport"
+                  >
+                    {{ uploading ? '正在处理' : '确认导入所选区块' }}
+                  </button>
+                </div>
+              </div>
+              <p v-else class="note">还没有待审核解析结果。</p>
+            </details>
+          </section>
+
+          <section class="card profile-v2-card">
+            <details>
+              <summary class="profile-subsection-summary">
+                <h3>AI 分析历史</h3>
+                <span class="quiet-note">{{ analyses.length }} 次</span>
+              </summary>
+              <div class="page-head-actions" style="justify-content: flex-start">
+                <button
+                  type="button"
+                  class="button secondary"
+                  :disabled="analyzing || !hasProfile"
+                  @click="analyze"
+                >
+                  {{ analyzing ? '正在分析' : hasProfile ? '重新分析' : '请先保存画像' }}
+                </button>
+              </div>
+
+              <div v-if="selectedAnalysis" class="analysis-layout">
+                <aside class="analysis-history">
+                  <h4>历史分析</h4>
+                  <button
+                    v-for="item in analyses"
+                    :key="item.id"
+                    type="button"
+                    class="analysis-history-item"
+                    :class="{ 'is-active': item.id === selectedAnalysisId }"
+                    @click="selectedAnalysisId = item.id"
+                  >
+                    <span>{{ formatDate(item.created_at) }}</span>
+                    <small>{{ analysisHistoryLabel(item) }}</small>
+                  </button>
+                </aside>
+                <article class="analysis-detail">
+                  <div class="analysis-meta">
+                    <span class="tag tag-inference">AI 推断 · 待确认</span>
+                    <time>{{ formatDate(selectedAnalysis.created_at) }}</time>
+                  </div>
+                  <section class="analysis-section">
+                    <h4>能力概况</h4>
+                    <p>{{ friendly(selectedAnalysis.analysis.overview) }}</p>
+                  </section>
+                  <section class="analysis-section">
+                    <h4>优势</h4>
+                    <ul>
+                      <li
+                        v-for="(item, index) in selectedAnalysis.analysis.strengths"
+                        :key="index"
+                      >
+                        <span class="tag" :class="basisTagClass(item.basis)">
+                          {{ basisLabel(item.basis) }}
+                        </span>
+                        <span class="tag tag-muted">{{ CONFIDENCE_LABELS[item.confidence] }}</span>
+                        {{ friendly(item.statement) }}
+                      </li>
+                    </ul>
+                  </section>
+                  <section class="analysis-section">
+                    <h4>待提升</h4>
+                    <ul>
+                      <li
+                        v-for="(item, index) in selectedAnalysis.analysis.gaps"
+                        :key="index"
+                      >
+                        <span class="tag" :class="basisTagClass(item.basis)">
+                          {{ basisLabel(item.basis) }}
+                        </span>
+                        <span class="tag tag-muted">{{ CONFIDENCE_LABELS[item.confidence] }}</span>
+                        {{ friendly(item.statement) }}
+                      </li>
+                    </ul>
+                  </section>
+                  <section class="analysis-section">
+                    <h4>与目标岗位的匹配</h4>
+                    <p>{{ friendly(selectedAnalysis.analysis.fit.summary) }}</p>
+                    <ul>
+                      <li
+                        v-for="(item, index) in selectedAnalysis.analysis.fit.evidence"
+                        :key="index"
+                      >
+                        {{ friendly(item) }}
+                      </li>
+                    </ul>
+                    <p
+                      v-if="selectedAnalysis.analysis.fit.uncertainty.length"
+                      class="note"
+                    >
+                      不确定性：{{ friendly(selectedAnalysis.analysis.fit.uncertainty.join('；')) }}
+                    </p>
+                  </section>
+                  <section class="analysis-section">
+                    <h4>值得探索的方向</h4>
+                    <ul>
+                      <li
+                        v-for="(item, index) in selectedAnalysis.analysis.directions"
+                        :key="index"
+                      >
+                        <span class="tag" :class="basisTagClass(item.basis)">
+                          {{ basisLabel(item.basis) }}
+                        </span>
+                        {{ friendly(item.statement) }}
+                      </li>
+                    </ul>
+                  </section>
+                  <section class="analysis-section">
+                    <h4>建议补充的信息</h4>
+                    <ul>
+                      <li
+                        v-for="(item, index) in selectedAnalysis.analysis.missing_information"
+                        :key="index"
+                      >
+                        {{ friendly(item) }}
+                      </li>
+                    </ul>
+                  </section>
+                  <section class="analysis-section">
+                    <h4>下一步行动</h4>
+                    <ol>
+                      <li
+                        v-for="(item, index) in selectedAnalysis.analysis.next_actions"
+                        :key="index"
+                      >
+                        {{ friendly(item) }}
+                      </li>
+                    </ol>
+                  </section>
+                </article>
+              </div>
+              <p v-else class="note">还没有职业分析，先保存画像再生成。</p>
+            </details>
+          </section>
+
+          <section v-if="unknownItems.length" class="card profile-v2-card">
+            <div class="profile-v2-card-head">
+              <div>
+                <h3>待补充信息</h3>
+                <p>这里只列出缺口，不替你填写。</p>
+              </div>
+              <span class="tag tag-muted">待补充</span>
+            </div>
+            <ul class="unknown-list">
+              <li v-for="item in unknownItems" :key="item">{{ friendly(item) }}</li>
+            </ul>
+          </section>
+        </div>
+      </template>
+    </template>
+
+    <ToastNotice v-if="toast" :message="toast" @close="toast = ''" />
   </section>
 </template>

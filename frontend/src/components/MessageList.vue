@@ -5,8 +5,13 @@ import type { ChatMessage } from '@/types/chat'
 import { userFacingText } from '@/utils/userFacing'
 
 const props = withDefaults(
-  defineProps<{ messages: ChatMessage[]; streaming?: boolean }>(),
-  { streaming: false },
+  defineProps<{
+    messages: ChatMessage[]
+    streaming?: boolean
+    thinking?: boolean
+    profileUsed?: boolean
+  }>(),
+  { streaming: false, thinking: false, profileUsed: false },
 )
 const container = ref<HTMLElement | null>(null)
 const stickToBottom = ref(true)
@@ -46,6 +51,12 @@ watch(
     void scrollToBottom()
   },
 )
+watch(
+  () => props.thinking,
+  () => {
+    void scrollToBottom()
+  },
+)
 onMounted(() => {
   void scrollToBottom(true)
 })
@@ -62,6 +73,16 @@ onMounted(() => {
       <div class="message-meta">
         <span>{{ message.role === 'user' ? '你' : 'CareerPilot AI' }}</span>
         <time>{{ formatTime(message.createdAt) }}</time>
+        <span
+          v-if="
+            message.role === 'assistant' &&
+            profileUsed &&
+            index === messages.length - 1
+          "
+          class="tag tag-evidence"
+        >
+          来自你的画像
+        </span>
       </div>
       <div class="message-body">
         {{ userFacingText(message.content)
@@ -76,5 +97,16 @@ onMounted(() => {
         ></span>
       </div>
     </article>
+    <div v-if="thinking" class="message message-assistant">
+      <div class="message-meta">
+        <span>CareerPilot AI</span>
+      </div>
+      <div class="thinking-bubble">
+        正在思考
+        <span class="thinking-dots" aria-hidden="true">
+          <span></span><span></span><span></span>
+        </span>
+      </div>
+    </div>
   </div>
 </template>

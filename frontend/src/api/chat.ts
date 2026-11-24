@@ -13,9 +13,13 @@ export function createConversation(title = 'AI 职业咨询'): Promise<Conversat
   })
 }
 
-export function listMessages(conversationId: string): Promise<MessageListDto> {
+export function listMessages(
+  conversationId: string,
+  signal?: AbortSignal,
+): Promise<MessageListDto> {
   return requestJson<MessageListDto>(
     `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
+    signal ? { signal } : undefined,
   )
 }
 

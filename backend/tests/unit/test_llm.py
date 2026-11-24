@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import httpx
@@ -57,6 +58,24 @@ def test_mock_text_does_not_call_http():
     settings = _settings(llm_mode="mock")
     client = LLMClient(settings=settings)
     assert "Mock" in client.complete_text("system", "hello")
+
+
+def test_mock_astream_yields_multiple_content_chunks():
+    settings = _settings(llm_mode="mock")
+    client = LLMClient(settings=settings)
+
+    async def collect():
+        return [
+            chunk
+            async for chunk in client.astream_chat(
+                [], mock_text="abcdefghijklmnopqrstuvwx"
+            )
+        ]
+
+    chunks = asyncio.run(collect())
+    content = "".join(chunk.content for chunk in chunks if chunk.content)
+    assert content == "abcdefghijklmnopqrstuvwx"
+    assert len([chunk for chunk in chunks if chunk.content]) > 1
 
 
 def test_mock_structured_requires_payload():

@@ -20,7 +20,7 @@ export function getMarketOverview(role?: string): Promise<MarketOverview> {
   return requestJson<MarketOverview>(`/api/market/overview${query({ role })}`)
 }
 
-export function getMarketSkills(role?: string, limit = 12): Promise<SkillDemand> {
+export function getMarketSkills(role?: string, limit = 20): Promise<SkillDemand> {
   return requestJson<SkillDemand>(
     `/api/market/skills${query({ role, limit })}`,
   )

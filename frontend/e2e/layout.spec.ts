@@ -1,25 +1,7 @@
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { expect, fileUser, test, userHeaders, type Page } from './fixtures'
 
-import { expect, test, type Page } from '@playwright/test'
-
-type MarketFixture = {
-  source: {
-    name: string
-    source_type: string
-    dataset_kind: string
-    license_note: string
-    base_url: string | null
-  }
-  jobs: Array<Record<string, unknown>>
-}
-
-const fixture: MarketFixture = JSON.parse(
-  readFileSync(
-    join(process.cwd(), 'e2e', 'fixtures', 'market-synthetic-jobs.json'),
-    'utf-8',
-  ),
-)
+const USER = fileUser('layout')
+test.use({ extraHTTPHeaders: { 'X-User-Id': USER } })
 
 const PROFILE = {
   basic: {
@@ -59,15 +41,14 @@ const PROFILE = {
 }
 
 test.beforeAll(async ({ request }) => {
+  const headers = userHeaders(USER)
   const profile = await request.put('/api/profile', {
     data: { data: PROFILE },
+    headers,
   })
   expect(profile.ok()).toBeTruthy()
 
-  const imported = await request.post('/api/market/import', { data: fixture })
-  expect(imported.ok()).toBeTruthy()
-
-  const current = await request.get('/api/roadmap/current')
+  const current = await request.get('/api/roadmap/current', { headers })
   expect(current.ok()).toBeTruthy()
   const currentBody = (await current.json()) as {
     data: { roadmap: { id: string } | null }
@@ -76,6 +57,7 @@ test.beforeAll(async ({ request }) => {
 
   const generated = await request.post('/api/roadmap/generate', {
     data: {},
+    headers,
   })
   expect(generated.ok()).toBeTruthy()
   const generatedBody = (await generated.json()) as {
@@ -83,6 +65,7 @@ test.beforeAll(async ({ request }) => {
   }
   const confirmed = await request.post(
     `/api/roadmap/${generatedBody.data.id}/confirm`,
+    { headers },
   )
   expect(confirmed.ok()).toBeTruthy()
 })
@@ -131,26 +114,79 @@ async function assertNaturalScroll(page: Page) {
 
 test('profile page scrolls naturally from the page body', async ({ page }) => {
   await page.goto('/profile')
-  await expect(page.getByRole('heading', { name: '职业概览' })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 2, name: /Profile/ })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '基本信息' })).toBeVisible()
+  await page.waitForLoadState('networkidle')
   await assertNaturalScroll(page)
 })
 
 test('market page scrolls naturally from the page body', async ({ page }) => {
   await page.goto('/market')
   await expect(page.locator('.market-meta')).toBeVisible()
+  await page.waitForLoadState('networkidle')
   await assertNaturalScroll(page)
 })
 
 test('roadmap page scrolls naturally from the page body', async ({ page }) => {
   await page.goto('/roadmap')
   await expect(page.getByTestId('roadmap-current')).toBeVisible()
+  await page.waitForLoadState('networkidle')
   await assertNaturalScroll(page)
+})
+
+test('dashboard renders the single focus card without fake metrics', async ({
+  page,
+  request,
+}) => {
+  await page.goto('/dashboard')
+  await expect(page.getByRole('heading', { level: 2, name: /Dashboard/ })).toBeVisible()
+  await expect(page.locator('.dash-focus')).toBeVisible()
+  await expect(page.locator('.dash-metric-ring')).toContainText('%')
+  await expect(page.locator('.dash-metric-link')).toHaveAttribute(
+    'href',
+    /\/profile/,
+  )
+
+  const gapResponse = await request.get('/api/roadmap/gap', {
+    headers: userHeaders(USER),
+  })
+  const gapBody = (await gapResponse.json()) as {
+    data: { to_improve: unknown[] }
+  }
+  const count = Math.min(3, gapBody.data.to_improve.length)
+  const expected =
+    count === 0
+      ? '能力差距'
+      : count >= 3
+        ? '能力差距 Top 3'
+        : `能力差距（${count} 项）`
+  await expect(
+    page.locator('.dash-card').filter({ hasText: '能力差距' }).locator('h3'),
+  ).toHaveText(expected)
+})
+
+test('dashboard never shows 0% or missing target while loading', async ({
+  page,
+}) => {
+  await page.route('**/api/profile', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+    await route.continue()
+  })
+  await page.goto('/dashboard')
+  await expect(page.getByRole('heading', { level: 2, name: /Dashboard/ })).toBeVisible()
+  await expect(page.locator('.page-lede .skeleton')).toBeVisible()
+  await expect(page.locator('.dash-metric-ring')).toHaveCount(0)
+  await expect(page.locator('body')).not.toContainText('目标岗位待设置')
+  await expect(page.locator('.dash-metric-link')).toContainText('%', {
+    timeout: 10_000,
+  })
+  await expect(page.locator('body')).toContainText('目标 数据分析师')
 })
 
 test('chat keeps the message list as the only scroll region', async ({ page }) => {
   await page.goto('/chat')
   await expect(
-    page.getByRole('heading', { name: '探索职业方向，找到下一步' }),
+    page.getByRole('heading', { level: 2, name: /AI Career Advisor/ }),
   ).toBeVisible()
 
   const input = page.getByLabel('消息输入框')
@@ -192,7 +228,7 @@ test('chat keeps the message list as the only scroll region', async ({ page }) =
 
 test('mobile layouts avoid horizontal overflow', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
-  for (const path of ['/profile', '/market', '/roadmap', '/chat']) {
+  for (const path of ['/dashboard', '/profile', '/market', '/roadmap', '/chat']) {
     await page.goto(path)
     await page.waitForTimeout(500)
     const overflow = await page.evaluate(

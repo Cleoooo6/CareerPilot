@@ -9,6 +9,8 @@ import {
   type SkillItem,
 } from '@/types/profile'
 
+withDefaults(defineProps<{ collapsible?: boolean }>(), { collapsible: false })
+
 const model = defineModel<ProfileData>({ required: true })
 
 function addSkill() {
@@ -76,10 +78,10 @@ function resetDemoShape() {
 
 <template>
   <div class="profile-editor">
-    <section class="editor-section">
-      <div class="editor-section-head">
+    <details class="editor-section" open>
+      <summary class="editor-section-head">
         <h3>基本信息</h3>
-      </div>
+      </summary>
       <div class="editor-grid">
         <label class="field">
           <span>姓名</span>
@@ -111,12 +113,12 @@ function resetDemoShape() {
           <input v-model="model.basic.location" maxlength="100" placeholder="城市" />
         </label>
       </div>
-    </section>
+    </details>
 
-    <section class="editor-section">
-      <div class="editor-section-head">
+    <details class="editor-section" :open="!collapsible">
+      <summary class="editor-section-head">
         <h3>职业目标</h3>
-      </div>
+      </summary>
       <div class="editor-grid">
         <label class="field">
           <span>目标岗位</span>
@@ -152,18 +154,14 @@ function resetDemoShape() {
           ></textarea>
         </label>
       </div>
-    </section>
+    </details>
 
-    <section class="editor-section">
-      <div class="editor-section-head">
-        <h3>技能</h3>
-        <button type="button" class="button ghost small" @click="addSkill">
-          添加技能
-        </button>
-      </div>
-      <p v-if="!model.skills.length" class="editor-empty">
-        还没有技能记录。
-      </p>
+    <details class="editor-section" :open="!collapsible">
+      <summary class="editor-section-head">
+        <h3>技能清单</h3>
+        <span class="quiet-note">{{ model.skills.length }} 项</span>
+      </summary>
+      <p v-if="!model.skills.length" class="editor-empty">还没有技能记录。</p>
       <div v-for="(skill, index) in model.skills" :key="skill.id" class="editor-item">
         <div class="editor-row">
           <label class="field grow">
@@ -200,18 +198,17 @@ function resetDemoShape() {
           </p>
         </div>
       </div>
-    </section>
+      <button type="button" class="button secondary small" @click="addSkill">
+        添加技能
+      </button>
+    </details>
 
-    <section class="editor-section">
-      <div class="editor-section-head">
+    <details class="editor-section" :open="!collapsible">
+      <summary class="editor-section-head">
         <h3>教育经历</h3>
-        <button type="button" class="button ghost small" @click="addEducation">
-          添加教育
-        </button>
-      </div>
-      <p v-if="!model.education.length" class="editor-empty">
-        还没有教育经历。
-      </p>
+        <span class="quiet-note">{{ model.education.length }} 段</span>
+      </summary>
+      <p v-if="!model.education.length" class="editor-empty">还没有教育经历。</p>
       <div v-for="(edu, index) in model.education" :key="edu.id" class="editor-item">
         <div class="editor-row">
           <label class="field grow">
@@ -249,18 +246,71 @@ function resetDemoShape() {
           </label>
         </div>
       </div>
-    </section>
+      <button type="button" class="button secondary small" @click="addEducation">
+        添加教育
+      </button>
+    </details>
 
-    <section class="editor-section">
-      <div class="editor-section-head">
-        <h3>项目经历</h3>
-        <button type="button" class="button ghost small" @click="addProject">
-          添加项目
-        </button>
-      </div>
-      <p v-if="!model.projects.length" class="editor-empty">
-        还没有项目经历。
+    <details class="editor-section" :open="!collapsible">
+      <summary class="editor-section-head">
+        <h3>工作与实习</h3>
+        <span class="quiet-note">{{ model.experiences.length }} 段</span>
+      </summary>
+      <p v-if="!model.experiences.length" class="editor-empty">
+        还没有工作或实习经历。
       </p>
+      <div
+        v-for="(experience, index) in model.experiences"
+        :key="experience.id"
+        class="editor-item"
+      >
+        <div class="editor-row">
+          <label class="field grow">
+            <span>公司</span>
+            <input v-model="experience.company" maxlength="150" placeholder="公司名称" />
+          </label>
+          <label class="field">
+            <span>岗位</span>
+            <input v-model="experience.position" maxlength="100" placeholder="岗位名称" />
+          </label>
+          <button
+            type="button"
+            class="button danger small"
+            @click="removeAt<ExperienceItem>(model.experiences, index)"
+          >
+            删除
+          </button>
+        </div>
+        <div class="editor-row">
+          <label class="field">
+            <span>开始</span>
+            <input v-model="experience.start_date" maxlength="20" placeholder="2025-07" />
+          </label>
+          <label class="field">
+            <span>结束</span>
+            <input v-model="experience.end_date" maxlength="20" placeholder="2025-09" />
+          </label>
+          <label class="field grow">
+            <span>工作内容</span>
+            <input
+              v-model="experience.description"
+              maxlength="2000"
+              placeholder="主要职责和成果"
+            />
+          </label>
+        </div>
+      </div>
+      <button type="button" class="button secondary small" @click="addExperience">
+        添加经历
+      </button>
+    </details>
+
+    <details class="editor-section" :open="!collapsible">
+      <summary class="editor-section-head">
+        <h3>项目经历</h3>
+        <span class="quiet-note">{{ model.projects.length }} 个</span>
+      </summary>
+      <p v-if="!model.projects.length" class="editor-empty">还没有项目经历。</p>
       <div v-for="(project, index) in model.projects" :key="project.id" class="editor-item">
         <div class="editor-row">
           <label class="field grow">
@@ -307,60 +357,10 @@ function resetDemoShape() {
           </label>
         </div>
       </div>
-    </section>
-
-    <section class="editor-section">
-      <div class="editor-section-head">
-        <h3>工作与实习</h3>
-        <button type="button" class="button ghost small" @click="addExperience">
-          添加经历
-        </button>
-      </div>
-      <p v-if="!model.experiences.length" class="editor-empty">
-        还没有工作或实习经历。
-      </p>
-      <div
-        v-for="(experience, index) in model.experiences"
-        :key="experience.id"
-        class="editor-item"
-      >
-        <div class="editor-row">
-          <label class="field grow">
-            <span>公司</span>
-            <input v-model="experience.company" maxlength="150" placeholder="公司名称" />
-          </label>
-          <label class="field">
-            <span>岗位</span>
-            <input v-model="experience.position" maxlength="100" placeholder="岗位名称" />
-          </label>
-          <button
-            type="button"
-            class="button danger small"
-            @click="removeAt<ExperienceItem>(model.experiences, index)"
-          >
-            删除
-          </button>
-        </div>
-        <div class="editor-row">
-          <label class="field">
-            <span>开始</span>
-            <input v-model="experience.start_date" maxlength="20" placeholder="2025-07" />
-          </label>
-          <label class="field">
-            <span>结束</span>
-            <input v-model="experience.end_date" maxlength="20" placeholder="2025-09" />
-          </label>
-          <label class="field grow">
-            <span>工作内容</span>
-            <input
-              v-model="experience.description"
-              maxlength="2000"
-              placeholder="主要职责和成果"
-            />
-          </label>
-        </div>
-      </div>
-    </section>
+      <button type="button" class="button secondary small" @click="addProject">
+        添加项目
+      </button>
+    </details>
 
     <button type="button" class="editor-reset" @click="resetDemoShape">
       清空当前编辑内容
