@@ -1,7 +1,4 @@
-import { expect, fileUser, test, userHeaders } from './fixtures'
-
-const USER = fileUser('roadmap')
-test.use({ extraHTTPHeaders: { 'X-User-Id': USER } })
+import { expect, useUser } from './fixtures'
 
 const PROFILE = {
   basic: {
@@ -38,10 +35,9 @@ const PROFILE = {
   experiences: [],
 }
 
-test.beforeAll(async ({ request }) => {
-  const profile = await request.put('/api/profile', {
-    data: { data: PROFILE },
-    headers: userHeaders(USER),
+const test = useUser('roadmap', async (session) => {
+  const profile = await session.api.put('/api/profile', {
+    data: PROFILE,
   })
   expect(profile.ok()).toBeTruthy()
 })
@@ -54,7 +50,7 @@ test('roadmap gap table, stage expansion, task actions and history drawer', asyn
   page.on('dialog', (dialog) => dialog.accept())
 
   await page.goto('/roadmap')
-  await expect(page.getByRole('heading', { level: 2, name: /My Roadmap/ })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 1, name: /My Roadmap/ })).toBeVisible()
 
   const gapCard = page.getByTestId('roadmap-gap')
   await expect(gapCard).toContainText('技能差距')

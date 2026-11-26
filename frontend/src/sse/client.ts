@@ -1,4 +1,4 @@
-import { ApiError, isAbortError } from '@/api/client'
+import { ApiError, csrfHeaders, isAbortError, notifyUnauthorized } from '@/api/client'
 import type { SseEvent, SseEventName } from '@/types/chat'
 
 import { parseSseBuffer } from './parser'
@@ -65,9 +65,11 @@ export async function streamChat(options: StreamChatOptions): Promise<void> {
       `/api/conversations/${encodeURIComponent(options.conversationId)}/messages`,
       {
         method: 'POST',
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
           Accept: 'text/event-stream',
+          ...csrfHeaders('POST'),
         },
         body: JSON.stringify({ content: options.content }),
         signal: options.signal,
@@ -79,6 +81,7 @@ export async function streamChat(options: StreamChatOptions): Promise<void> {
   }
 
   if (!response.ok) {
+    notifyUnauthorized(response.status)
     throw await readHttpError(response)
   }
   if (!response.body) {

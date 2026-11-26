@@ -185,6 +185,11 @@ const marketSources = computed(
       .join('、') ?? '',
 )
 const coverage = computed(() => gapCoverage(roadmapGap.value))
+const coveragePercent = computed(() =>
+  coverage.value.total
+    ? Math.round((coverage.value.matched / coverage.value.total) * 100)
+    : 0,
+)
 const nextActionsTitle = computed(() =>
   topCountTitle('建议', nextActions.value.length, 3),
 )
@@ -253,6 +258,25 @@ function setTab(tab: TabId) {
     document
       .querySelector('.profile-v2-tabs')
       ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  })
+}
+
+function onTabKeydown(event: KeyboardEvent, tab: TabId) {
+  const index = TAB_IDS.indexOf(tab)
+  let next = -1
+  if (event.key === 'ArrowRight') next = (index + 1) % TAB_IDS.length
+  if (event.key === 'ArrowLeft')
+    next = (index - 1 + TAB_IDS.length) % TAB_IDS.length
+  if (event.key === 'Home') next = 0
+  if (event.key === 'End') next = TAB_IDS.length - 1
+  if (next < 0) return
+  event.preventDefault()
+  const container = (event.currentTarget as HTMLElement | null)?.parentElement
+  setTab(TAB_IDS[next])
+  void nextTick(() => {
+    container
+      ?.querySelectorAll<HTMLElement>('[role="tab"]')
+      [next]?.focus()
   })
 }
 
@@ -555,7 +579,7 @@ onMounted(() => {
         <div class="profile-v2-identity">
           <span class="profile-avatar">{{ initial }}</span>
           <div>
-            <h2>Profile <span class="page-title-cn">职业画像</span></h2>
+            <h1>Profile <span class="page-title-cn">职业画像</span></h1>
             <p class="page-lede">{{ identityLine }}</p>
           </div>
         </div>
@@ -619,7 +643,10 @@ onMounted(() => {
             :class="{ 'is-active': activeTab === tab.id }"
             role="tab"
             :aria-selected="activeTab === tab.id"
+            :tabindex="activeTab === tab.id ? 0 : -1"
+            :data-tab-id="tab.id"
             @click="setTab(tab.id)"
+            @keydown="onTabKeydown($event, tab.id)"
           >
             <strong>{{ tab.en }}</strong>
             <span>{{ tab.cn }}</span>
@@ -647,9 +674,12 @@ onMounted(() => {
               <span>工作 / 实习 {{ profile.data.experiences.length }} 段</span>
               <span>技能 {{ profile.data.skills.length }} 项</span>
             </div>
-            <p class="note">
-              以上计数与「资料管理」读取同一份画像数据；若两处不一致，属于数据源问题，需要核对。
-            </p>
+            <details class="profile-count-help">
+              <summary>计数口径</summary>
+              <p>
+                这些计数与「资料管理」来自同一份画像资料；如两处不一致，请以资料管理中的明细为准。
+              </p>
+            </details>
             <button
               type="button"
               class="button primary"
@@ -864,8 +894,12 @@ onMounted(() => {
             <p v-if="!targetRole" class="note">
               先设置目标岗位，才能按方向查看市场要求。
             </p>
-            <p v-else-if="marketLoading" class="note">正在读取市场数据…</p>
-            <p v-else-if="gapLoading" class="note">正在读取目标岗位技能差距…</p>
+            <p v-else-if="marketLoading" class="note state-loading" role="status">
+              正在读取市场数据…
+            </p>
+            <p v-else-if="gapLoading" class="note state-loading" role="status">
+              正在读取目标岗位技能差距…
+            </p>
             <p v-else-if="marketError" class="note warning-text">
               暂时无法读取市场数据，画像本身不受影响。
             </p>
@@ -883,6 +917,21 @@ onMounted(() => {
                 >
                   {{ marketMeta.sample_sufficient ? '样本达标' : '样本量较少' }}
                 </span>
+              </div>
+              <div class="profile-match-score">
+                <div class="profile-match-score-copy">
+                  <strong>{{ coverage.matched }} / {{ coverage.total }}</strong>
+                  <span>目标岗位需求技能已记录</span>
+                </div>
+                <div
+                  class="profile-match-track"
+                  role="progressbar"
+                  :aria-valuenow="coveragePercent"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                >
+                  <span :style="{ width: `${coveragePercent}%` }"></span>
+                </div>
               </div>
               <p class="note">
                 来源 {{ marketSources || '未记录' }} · 统计口径为导入岗位计数，仅用于方向参考。
@@ -1023,15 +1072,7 @@ onMounted(() => {
               </div>
               <div class="page-head-actions">
                 <button
-                  v-if="hasProfile"
-                  type="button"
-                  class="button danger small"
-                  :disabled="saving"
-                  @click="removeProfile"
-                >
-                  删除画像
-                </button>
-                <button
+
                   type="button"
                   class="button primary"
                   :disabled="saving"
@@ -1265,6 +1306,23 @@ onMounted(() => {
             <ul class="unknown-list">
               <li v-for="item in unknownItems" :key="item">{{ friendly(item) }}</li>
             </ul>
+          </section>
+
+          <section v-if="hasProfile" class="card profile-v2-card danger-zone">
+            <div class="profile-v2-card-head">
+              <div>
+                <h3>危险区</h3>
+                <p>删除后画像与版本记录会移除，且不可恢复。</p>
+              </div>
+              <button
+                type="button"
+                class="button danger small"
+                :disabled="saving"
+                @click="removeProfile"
+              >
+                删除画像
+              </button>
+            </div>
           </section>
         </div>
       </template>

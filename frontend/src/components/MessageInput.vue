@@ -33,7 +33,9 @@ defineExpose({ fill })
 <template>
   <div class="composer">
     <div class="composer-shell">
+      <label class="composer-label" for="chat-message-input">你的问题</label>
       <textarea
+        id="chat-message-input"
         v-model="draft"
         class="composer-input"
         rows="2"

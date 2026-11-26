@@ -6,11 +6,38 @@ from uuid import UUID, uuid4
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from app.core.errors import AppError
 from app.db.pool import get_pool
 
 
 class UserRepository:
-    def ensure_user(self, external_id: str, display_name: str = "Demo User") -> dict[str, Any]:
+    def ensure_user(self, user_id: str, display_name: str | None = None) -> dict[str, Any]:
+        """Resolve an authenticated internal user id.
+
+        The identifier always comes from a server-side session (or the explicit
+        test harness). Unknown ids are rejected instead of being created.
+        """
+        try:
+            parsed = UUID(user_id)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise AppError("UNAUTHORIZED", "登录状态无效", status_code=401) from exc
+        with get_pool().connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    """
+                    SELECT id, external_id, display_name, created_at
+                    FROM app_user
+                    WHERE id = %s AND status = 'active'
+                    """,
+                    (parsed,),
+                )
+                row = cur.fetchone()
+        if row is None:
+            raise AppError("UNAUTHORIZED", "登录状态无效", status_code=401)
+        return row
+
+    def ensure_test_user(self, external_id: str) -> dict[str, Any]:
+        """Test-only fixture account creation used by the isolated harness."""
         with get_pool().connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(
@@ -18,10 +45,11 @@ class UserRepository:
                     INSERT INTO app_user (id, external_id, display_name)
                     VALUES (%s, %s, %s)
                     ON CONFLICT (external_id)
-                    DO UPDATE SET display_name = EXCLUDED.display_name
-                    RETURNING id, external_id, display_name, created_at
+                    DO UPDATE SET updated_at = now()
+                    RETURNING id, external_id, display_name, email, status,
+                              email_verified_at, is_demo, created_at
                     """,
-                    (uuid4(), external_id, display_name),
+                    (uuid4(), external_id, f"E2E {external_id}"[:80]),
                 )
                 return cur.fetchone()
 

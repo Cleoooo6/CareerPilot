@@ -1,0 +1,1 @@
+"""Industry Pulse RSS ingestion package."""

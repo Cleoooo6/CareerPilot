@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { request as playwrightRequest } from '@playwright/test'
+
 interface MarketFixture {
   source: {
     name: string
@@ -11,6 +13,10 @@ interface MarketFixture {
   }
   jobs: Array<Record<string, unknown>>
 }
+
+const FIXTURE_USER = 'e2e-market-seeder'
+const FIXTURE_EMAIL = `${FIXTURE_USER}@e2e.careerpilot.test`
+const FIXTURE_PASSWORD = 'E2ePassword123'
 
 export default async function globalSetup(): Promise<void> {
   const baseUrl = process.env.E2E_BASE_URL?.trim() ?? ''
@@ -35,23 +41,52 @@ export default async function globalSetup(): Promise<void> {
       'utf-8',
     ),
   )
-  const response = await fetch(`${baseUrl}/api/market/import`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(fixture),
-  })
-  if (!response.ok) {
-    throw new Error(`E2E market fixture import failed: HTTP ${response.status}`)
-  }
-  const body = (await response.json()) as {
-    data: { total: number; imported: number; duplicates: number; failed: number }
-  }
-  if (
-    body.data.total !== fixture.jobs.length ||
-    body.data.failed !== 0 ||
-    body.data.imported + body.data.duplicates !== fixture.jobs.length
-  ) {
-    throw new Error('E2E market fixture import returned an unexpected result')
-  }
 
+  const context = await playwrightRequest.newContext({ baseURL: baseUrl })
+  try {
+    const register = await context.post('/api/auth/register', {
+      data: {
+        email: FIXTURE_EMAIL,
+        password: FIXTURE_PASSWORD,
+        display_name: 'E2E Market Seeder',
+      },
+    })
+    if (!register.ok() && register.status() !== 409) {
+      throw new Error(`E2E seeder register failed: HTTP ${register.status()}`)
+    }
+    let payload = register
+    if (!register.ok()) {
+      payload = await context.post('/api/auth/login', {
+        data: { email: FIXTURE_EMAIL, password: FIXTURE_PASSWORD },
+      })
+    }
+    if (!payload.ok()) {
+      throw new Error(`E2E seeder login failed: HTTP ${payload.status()}`)
+    }
+    const session = (await payload.json()) as {
+      data: { csrf_token: string }
+    }
+
+    const response = await context.post('/api/market/import', {
+      headers: { 'X-CSRF-Token': session.data.csrf_token },
+      data: fixture,
+    })
+    if (!response.ok()) {
+      throw new Error(
+        `E2E market fixture import failed: HTTP ${response.status()}`,
+      )
+    }
+    const body = (await response.json()) as {
+      data: { total: number; imported: number; duplicates: number; failed: number }
+    }
+    if (
+      body.data.total !== fixture.jobs.length ||
+      body.data.failed !== 0 ||
+      body.data.imported + body.data.duplicates !== fixture.jobs.length
+    ) {
+      throw new Error('E2E market fixture import returned an unexpected result')
+    }
+  } finally {
+    await context.dispose()
   }
+}

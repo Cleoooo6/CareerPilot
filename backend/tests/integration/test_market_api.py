@@ -121,7 +121,104 @@ def test_market_empty_and_tool_contracts(client):
     assert requirements["overview"]["meta"]["sample_size"] == 6
 
 
+def _dataset_payload(name: str, dataset_kind: str, title: str):
+    return {
+        "source": {
+            "name": name,
+            "source_type": "manual_json",
+            "dataset_kind": dataset_kind,
+            "license_note": f"{dataset_kind} dataset for isolation test",
+        },
+        "jobs": [
+            _job(title, "Python、SQL", 9),
+            _job(title, "Python、SQL", 10),
+        ],
+    }
+
+
+def test_real_and_synthetic_market_data_never_mix_in_default_statistics(client):
+    assert client.post(
+        "/api/market/import",
+        json=_dataset_payload("real-source", "real", "真实分析师"),
+    ).status_code == 200
+    assert client.post(
+        "/api/market/import",
+        json=_dataset_payload("synthetic-source", "synthetic", "演示分析师"),
+    ).status_code == 200
+
+    default = client.get("/api/market/overview").json()["data"]
+    assert default["total_jobs"] == 2
+    assert default["meta"]["dataset_kinds"] == ["real"]
+    assert any("已优先使用真实岗位数据" in item for item in default["meta"]["warnings"])
+    assert all(item["name"] != "演示分析师" for item in default["top_roles"])
+
+    synthetic = client.get(
+        "/api/market/overview?dataset_kind=synthetic"
+    ).json()["data"]
+    assert synthetic["total_jobs"] == 2
+    assert synthetic["meta"]["dataset_kinds"] == ["synthetic"]
+
+    real = client.get("/api/market/overview?dataset_kind=real").json()["data"]
+    assert real["total_jobs"] == 2
+    assert real["meta"]["sources"][0]["name"] == "real-source"
+
+
 def test_market_rejects_unsupported_dimension(client):
     response = client.get("/api/market/distributions?dimension=salary")
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_market_industry_and_time_filters_apply_to_all_statistics(client):
+    payload = {
+        "source": {
+            "name": "filter_synthetic_market",
+            "source_type": "manual_json",
+            "dataset_kind": "synthetic",
+            "license_note": "合成测试数据，仅用于筛选链路验证",
+        },
+        "jobs": [
+            _job("数据分析师", "Python、SQL", 1),
+            _job("数据分析师", "SQL、Excel", 11),
+            _job("后端工程师", "Docker、Linux", 11),
+        ],
+    }
+    response = client.post("/api/market/import", json=payload)
+    assert response.status_code == 200
+
+    all_6 = client.get("/api/market/overview?months=6").json()["data"]
+    all_12 = client.get("/api/market/overview?months=12").json()["data"]
+    assert all_6["total_jobs"] == 2
+    assert all_12["total_jobs"] == 3
+
+    digital = client.get(
+        "/api/market/overview?industry=digital_tech_comms&months=12"
+    ).json()["data"]
+    finance = client.get(
+        "/api/market/overview?industry=finance_insurance&months=12"
+    ).json()["data"]
+    assert digital["total_jobs"] == 3
+    assert finance["total_jobs"] == 0
+    assert finance["meta"]["sample_sufficient"] is False
+
+    skills = client.get(
+        "/api/market/skills?industry=digital_tech_comms&months=6"
+    ).json()["data"]
+    assert skills["meta"]["sample_size"] == 2
+
+    education = client.get(
+        "/api/market/distributions?dimension=education"
+        "&industry=digital_tech_comms&months=6"
+    ).json()["data"]
+    assert sum(item["count"] for item in education["items"]) == 2
+
+    roles = client.get(
+        "/api/market/roles?industry=finance_insurance&months=12"
+    ).json()["data"]
+    assert roles["items"] == []
+
+    trend = client.get(
+        "/api/market/trends?industry=digital_tech_comms&months=12"
+    ).json()["data"]
+    assert trend["insufficient_data"] is True
+    assert trend["points"] == []

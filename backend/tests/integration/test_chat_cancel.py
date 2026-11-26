@@ -5,6 +5,7 @@ import psycopg
 import pytest
 
 from app.core.config import get_settings
+from app.db.repositories import user_repository
 from app.services.chat_service import ChatService
 from app.tracing.tracer import DatabaseTracer
 
@@ -39,15 +40,17 @@ def _run_row(run_id: UUID) -> tuple[str, str | None]:
 
 def test_cancelled_stream_marks_run_failed_and_releases(client):
     async def scenario():
+        user = await asyncio.to_thread(user_repository.ensure_test_user, "cancel-user")
+        user_id = str(user["id"])
         service = ChatService(graph=SlowGraph(), tracer=DatabaseTracer())
-        conversation = await service.create_conversation("cancel-user")
+        conversation = await service.create_conversation(user_id)
         conversation_id = UUID(str(conversation["id"]))
         events = []
         started = asyncio.Event()
 
         async def consume():
             async for event in service.stream_turn(
-                user_external_id="cancel-user",
+                user_external_id=user_id,
                 conversation_id=conversation_id,
                 content="你好",
                 request_id="cancel-request",

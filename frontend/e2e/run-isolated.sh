@@ -49,6 +49,7 @@ NET="careerpilot-e2e-${RUN_ID}"
 API="careerpilot-e2e-api-${RUN_ID}"
 WEB="careerpilot-e2e-web-${RUN_ID}"
 E2E_IMAGE="careerpilot-e2e-isolated"
+WEB_IMAGE="${E2E_WEB_IMAGE:-careerpilot-web:latest}"
 
 demo_snapshot() {
   "$HOST_PY" - <<'PY'
@@ -94,6 +95,10 @@ snapshot_test_db() {
   MSYS_NO_PATHCONV=1 docker exec -i -e E2E_DB_GUARD="$TEST_DB" "$API" python - < "$ROOT/backend/tests/e2e_reset.py" --snapshot
 }
 
+seed_industry() {
+  MSYS_NO_PATHCONV=1 docker exec -i -e E2E_DB_GUARD="$TEST_DB" "$API" python - < "$ROOT/backend/tests/e2e_industry_seed.py"
+}
+
 cleanup() {
   if docker ps -a --format '{{.Names}}' | grep -qx "$API"; then
     MSYS_NO_PATHCONV=1 docker exec -i -e E2E_DB_GUARD="$TEST_DB" "$API" python - < "$ROOT/backend/tests/e2e_reset.py" >/dev/null 2>&1 || true
@@ -104,8 +109,10 @@ cleanup() {
 trap cleanup EXIT
 
 echo "Building isolated images..."
-docker build -t careerpilot-api-e2e ./backend >/dev/null
-docker build -t careerpilot-web-e2e -f frontend/Dockerfile . >/dev/null
+if [ "${E2E_SKIP_API_BUILD:-0}" != "1" ]; then
+  docker build -t careerpilot-api-e2e ./backend >/dev/null
+fi
+docker image inspect "$WEB_IMAGE" >/dev/null 2>&1 || docker build -t "$WEB_IMAGE" -f frontend/Dockerfile . >/dev/null
 docker build -f - -t "$E2E_IMAGE" . >/dev/null <<'DOCKER'
 FROM mcr.microsoft.com/playwright:v1.65.1-noble
 WORKDIR /app
@@ -119,7 +126,7 @@ docker network create "$NET" >/dev/null
 docker run -d --name "$API" --network careerpilot_net \
   -e APP_ENV=test \
   -e DATABASE_URL="$INTERNAL_TEST_URL" \
-  -e DEFAULT_USER_ID="e2e-required-${RUN_ID}" \
+  -e AUTH_COOKIE_SECURE=false \
   -e LLM_MODE=mock \
   -e LLM_API_KEY= \
   careerpilot-api-e2e >/dev/null
@@ -146,7 +153,7 @@ if [ "$ACTUAL_TEST_DB" != "careerpilot_test" ] || [ "$ACTUAL_TEST_DB" = "$ACTUAL
   exit 1
 fi
 
-docker run -d --name "$WEB" --network "$NET" careerpilot-web-e2e >/dev/null
+docker run -d --name "$WEB" --network "$NET" "$WEB_IMAGE" >/dev/null
 for i in $(seq 1 30); do
   if docker exec "$WEB" wget -qO- http://127.0.0.1:8080/ >/dev/null 2>&1; then
     break
@@ -166,6 +173,7 @@ echo "TEST_DB_AFTER_RESET=$(snapshot_test_db)"
 for round in 1 2; do
   echo "=== isolated E2E round $round ==="
   reset_test_db
+  seed_industry
   docker run --rm --network "$NET" \
     -e E2E_BASE_URL="http://$WEB:8080" \
     -e E2E_TEST_DB_CONFIRMED=true \

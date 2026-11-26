@@ -1,8 +1,6 @@
-import { expect, fileUser, test, userHeaders } from './fixtures'
 import { fileURLToPath } from 'node:url'
 
-const USER = fileUser('profile')
-test.use({ extraHTTPHeaders: { 'X-User-Id': USER } })
+import { expect, useUser } from './fixtures'
 
 const resumeFixture = fileURLToPath(
   new URL('./fixtures/fictional-resume.docx', import.meta.url),
@@ -28,10 +26,9 @@ const SEED_PROFILE = {
   experiences: [],
 }
 
-test.beforeAll(async ({ request }) => {
-  const response = await request.put('/api/profile', {
-    data: { data: SEED_PROFILE },
-    headers: userHeaders(USER),
+const test = useUser('profile', async (session) => {
+  const response = await session.api.put('/api/profile', {
+    data: SEED_PROFILE,
   })
   expect(response.ok()).toBeTruthy()
 })
@@ -44,7 +41,7 @@ test('profile five tabs, source labels, resume import and analysis still work', 
   page.on('dialog', (dialog) => dialog.accept())
 
   await page.goto('/profile')
-  await expect(page.getByRole('heading', { level: 2, name: /Profile/ })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 1, name: /Profile/ })).toBeVisible()
   await page.waitForLoadState('networkidle')
 
   await page.getByRole('tab', { name: /Manage Profile/ }).click()

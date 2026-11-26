@@ -1,8 +1,37 @@
-import { test, expect } from '@playwright/test'
+import {
+  test as base,
+  expect,
+  type APIRequestContext,
+  type APIResponse,
+  type Page,
+} from '@playwright/test'
 
-export type { Page } from '@playwright/test'
+export type { Page }
+export { expect }
+export { base as test }
 
-function readIdentity(): { runId: string; prefix: string } {
+export interface E2EUser {
+  ref: string
+  email: string
+  displayName: string
+  csrfToken: string
+}
+
+export interface SessionApi {
+  get(path: string): Promise<APIResponse>
+  post(path: string, data?: unknown): Promise<APIResponse>
+  put(path: string, data?: unknown): Promise<APIResponse>
+  patch(path: string, data?: unknown): Promise<APIResponse>
+}
+
+export interface E2ESession {
+  user: E2EUser
+  api: SessionApi
+}
+
+const E2E_PASSWORD = 'E2ePassword123'
+
+export function readIdentity(): { runId: string; prefix: string } {
   if (process.env.E2E_TEST_DB_CONFIRMED !== 'true') {
     throw new Error(
       'E2E_TEST_DB_CONFIRMED=true is required; run via the isolated E2E runner',
@@ -34,8 +63,88 @@ export function fileUser(slug: string): string {
   return user
 }
 
-export function userHeaders(user: string): Record<string, string> {
-  return { 'X-User-Id': user }
+function credentials(slug: string): {
+  ref: string
+  email: string
+  password: string
+  displayName: string
+} {
+  const ref = fileUser(slug)
+  return {
+    ref,
+    email: `${ref}@e2e.careerpilot.test`,
+    password: E2E_PASSWORD,
+    displayName: `E2E ${slug}`,
+  }
 }
 
-export { expect, test }
+function csrfHeaders(user: E2EUser): Record<string, string> {
+  return { 'X-CSRF-Token': user.csrfToken }
+}
+
+interface SessionPayload {
+  data: { csrf_token: string }
+}
+
+export async function createSession(
+  request: APIRequestContext,
+  slug: string,
+): Promise<E2ESession> {
+  const cred = credentials(slug)
+  const register = await request.post('/api/auth/register', {
+    data: {
+      email: cred.email,
+      password: cred.password,
+      display_name: cred.displayName,
+    },
+  })
+  if (!register.ok() && register.status() !== 409) {
+    throw new Error(
+      `E2E register ${cred.email} failed: HTTP ${register.status()}`,
+    )
+  }
+  let payload: APIResponse = register
+  if (!register.ok()) {
+    payload = await request.post('/api/auth/login', {
+      data: { email: cred.email, password: cred.password },
+    })
+  }
+  if (!payload.ok()) {
+    throw new Error(
+      `E2E login ${cred.email} failed: HTTP ${payload.status()}`,
+    )
+  }
+  const body = (await payload.json()) as SessionPayload
+  const user: E2EUser = {
+    ref: cred.ref,
+    email: cred.email,
+    displayName: cred.displayName,
+    csrfToken: body.data.csrf_token,
+  }
+  const api: SessionApi = {
+    get: (path) => request.get(path),
+    post: (path, data) =>
+      request.post(path, { data: data ?? {}, headers: csrfHeaders(user) }),
+    put: (path, data) =>
+      request.put(path, { data: data ?? {}, headers: csrfHeaders(user) }),
+    patch: (path, data) =>
+      request.patch(path, { data: data ?? {}, headers: csrfHeaders(user) }),
+  }
+  return { user, api }
+}
+
+export function useUser(
+  slug: string,
+  seed?: (session: E2ESession) => Promise<void>,
+) {
+  return base.extend<{ session: E2ESession }>({
+    session: [
+      async ({ context }, use) => {
+        const session = await createSession(context.request, slug)
+        if (seed) await seed(session)
+        await use(session)
+      },
+      { auto: true },
+    ],
+  })
+}

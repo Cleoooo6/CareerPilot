@@ -1,3 +1,5 @@
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -5,6 +7,12 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from app.db.pool import get_pool
+from app.services.industry_trends_service import MARKET_INDUSTRY_MAP
+
+MARKET_INDUSTRY_GROUPS: dict[str, list[str]] = defaultdict(list)
+for _name, _industry in MARKET_INDUSTRY_MAP.items():
+    if _name not in MARKET_INDUSTRY_GROUPS[_industry]:
+        MARKET_INDUSTRY_GROUPS[_industry].append(_name)
 
 
 class MarketRepository:
@@ -155,6 +163,8 @@ class MarketRepository:
         dataset_kind: str,
         *,
         table_alias: str = "j",
+        industry: str | None = None,
+        months: int | None = None,
     ) -> tuple[str, list[Any]]:
         clauses = [f"{table_alias}.status = 'processed'"]
         params: list[Any] = []
@@ -167,12 +177,29 @@ class MarketRepository:
         if dataset_kind in {"real", "synthetic"}:
             clauses.append("s.dataset_kind = %s")
             params.append(dataset_kind)
+        if industry:
+            clauses.append(f"{table_alias}.industry = ANY(%s)")
+            params.append(MARKET_INDUSTRY_GROUPS.get(industry, []))
+        if months:
+            since = datetime.now(timezone.utc) - timedelta(days=months * 30)
+            clauses.append(
+                f"COALESCE({table_alias}.posted_at, {table_alias}.fetched_at) >= %s"
+            )
+            params.append(since)
         return " AND ".join(clauses), params
 
     def aggregate(
-        self, role: str | None, location: str | None, dataset_kind: str
+        self,
+        role: str | None,
+        location: str | None,
+        dataset_kind: str,
+        *,
+        industry: str | None = None,
+        months: int | None = None,
     ) -> dict[str, Any]:
-        where, params = self._where(role, location, dataset_kind)
+        where, params = self._where(
+            role, location, dataset_kind, industry=industry, months=months
+        )
         with get_pool().connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(
@@ -199,10 +226,15 @@ class MarketRepository:
         location: str | None,
         dataset_kind: str,
         limit: int = 10,
+        *,
+        industry: str | None = None,
+        months: int | None = None,
     ) -> list[dict[str, Any]]:
         if column not in {"title", "company", "location", "education", "experience"}:
             raise ValueError("unsupported column")
-        where, params = self._where(role, location, dataset_kind)
+        where, params = self._where(
+            role, location, dataset_kind, industry=industry, months=months
+        )
         with get_pool().connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(
@@ -225,8 +257,13 @@ class MarketRepository:
         location: str | None,
         dataset_kind: str,
         limit: int = 15,
+        *,
+        industry: str | None = None,
+        months: int | None = None,
     ) -> list[dict[str, Any]]:
-        where, params = self._where(role, location, dataset_kind)
+        where, params = self._where(
+            role, location, dataset_kind, industry=industry, months=months
+        )
         with get_pool().connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(
@@ -249,10 +286,20 @@ class MarketRepository:
         roles: list[str],
         location: str | None,
         dataset_kind: str,
+        *,
+        industry: str | None = None,
+        months: int | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         result = {}
         for role in roles:
-            result[role] = self.top_skills(role, location, dataset_kind, limit=5)
+            result[role] = self.top_skills(
+                role,
+                location,
+                dataset_kind,
+                limit=5,
+                industry=industry,
+                months=months,
+            )
         return result
 
     def distribution(
@@ -262,8 +309,19 @@ class MarketRepository:
         location: str | None,
         dataset_kind: str,
         limit: int = 12,
+        *,
+        industry: str | None = None,
+        months: int | None = None,
     ) -> list[dict[str, Any]]:
-        return self.top_counts(dimension, role, location, dataset_kind, limit)
+        return self.top_counts(
+            dimension,
+            role,
+            location,
+            dataset_kind,
+            limit,
+            industry=industry,
+            months=months,
+        )
 
     def trends(
         self,
@@ -271,8 +329,16 @@ class MarketRepository:
         location: str | None,
         dataset_kind: str,
         months: int = 6,
+        *,
+        industry: str | None = None,
     ) -> list[dict[str, Any]]:
-        where, params = self._where(role, location, dataset_kind)
+        where, params = self._where(
+            role,
+            location,
+            dataset_kind,
+            industry=industry,
+            months=months,
+        )
         with get_pool().connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(
@@ -285,14 +351,26 @@ class MarketRepository:
                     WHERE {where}
                     GROUP BY date_trunc('month', COALESCE(j.posted_at, j.fetched_at))
                     ORDER BY date_trunc('month', COALESCE(j.posted_at, j.fetched_at))
-                    LIMIT %s
                     """,
-                    [*params, months],
+                    params,
                 )
                 return list(cur.fetchall())
 
-    def roles(self, dataset_kind: str, limit: int = 30) -> list[str]:
-        where, params = self._where(None, None, dataset_kind)
+    def roles(
+        self,
+        dataset_kind: str,
+        limit: int = 30,
+        *,
+        industry: str | None = None,
+        months: int | None = None,
+    ) -> list[str]:
+        where, params = self._where(
+            None,
+            None,
+            dataset_kind,
+            industry=industry,
+            months=months,
+        )
         with get_pool().connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(
@@ -310,9 +388,21 @@ class MarketRepository:
                 return [row["name"] for row in cur.fetchall()]
 
     def matching_sources(
-        self, role: str | None, location: str | None, dataset_kind: str
+        self,
+        role: str | None,
+        location: str | None,
+        dataset_kind: str,
+        *,
+        industry: str | None = None,
+        months: int | None = None,
     ) -> list[dict[str, Any]]:
-        where, params = self._where(role, location, dataset_kind)
+        where, params = self._where(
+            role,
+            location,
+            dataset_kind,
+            industry=industry,
+            months=months,
+        )
         with get_pool().connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(

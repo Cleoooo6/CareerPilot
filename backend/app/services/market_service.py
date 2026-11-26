@@ -93,25 +93,64 @@ class MarketService:
         role: str | None = None,
         location: str | None = None,
         dataset_kind: Literal["all", "real", "synthetic"] = "all",
+        industry: str | None = None,
+        months: int | None = None,
     ) -> MarketOverviewOut:
-        meta = self._meta(role, location, dataset_kind)
-        aggregate = self.repository.aggregate(role, location, dataset_kind)
+        effective_kind, synthetic_excluded = self._resolve_dataset_kind(
+            role, location, dataset_kind, industry, months
+        )
+        meta = self._meta(
+            role,
+            location,
+            effective_kind,
+            industry,
+            months,
+            synthetic_excluded=synthetic_excluded,
+        )
+        aggregate = self.repository.aggregate(
+            role, location, effective_kind, industry=industry, months=months
+        )
         total = aggregate["total_jobs"]
         top_roles = self._counts(
-            self.repository.top_counts("title", role, location, dataset_kind, 8), total
+            self.repository.top_counts(
+                "title",
+                role,
+                location,
+                effective_kind,
+                8,
+                industry=industry,
+                months=months,
+            ),
+            total,
         )
         top_skills = self._skills(
-            self.repository.top_skills(role, location, dataset_kind, 12), total
+            self.repository.top_skills(
+                role,
+                location,
+                effective_kind,
+                12,
+                industry=industry,
+                months=months,
+            ),
+            total,
         )
         role_names = [item.name for item in top_roles[:5]]
         role_skills_map = self.repository.role_skills(
-            role_names, location, dataset_kind
+            role_names,
+            location,
+            effective_kind,
+            industry=industry,
+            months=months,
         )
         role_skills = [
             MarketRoleSkill(
                 role=role_name,
                 skills=self._skills(items, self.repository.aggregate(
-                    role_name, location, dataset_kind
+                    role_name,
+                    location,
+                    effective_kind,
+                    industry=industry,
+                    months=months,
                 )["total_jobs"]),
             )
             for role_name, items in role_skills_map.items()
@@ -134,12 +173,33 @@ class MarketService:
         location: str | None = None,
         dataset_kind: Literal["all", "real", "synthetic"] = "all",
         limit: int = 20,
+        industry: str | None = None,
+        months: int | None = None,
     ) -> SkillDemandOut:
-        meta = self._meta(role, location, dataset_kind)
-        aggregate = self.repository.aggregate(role, location, dataset_kind)
+        effective_kind, synthetic_excluded = self._resolve_dataset_kind(
+            role, location, dataset_kind, industry, months
+        )
+        meta = self._meta(
+            role,
+            location,
+            effective_kind,
+            industry,
+            months,
+            synthetic_excluded=synthetic_excluded,
+        )
+        aggregate = self.repository.aggregate(
+            role, location, effective_kind, industry=industry, months=months
+        )
         return SkillDemandOut(
             items=self._skills(
-                self.repository.top_skills(role, location, dataset_kind, limit),
+                self.repository.top_skills(
+                    role,
+                    location,
+                    effective_kind,
+                    limit,
+                    industry=industry,
+                    months=months,
+                ),
                 aggregate["total_jobs"],
             ),
             meta=meta,
@@ -152,11 +212,32 @@ class MarketService:
         role: str | None = None,
         location: str | None = None,
         dataset_kind: Literal["all", "real", "synthetic"] = "all",
+        industry: str | None = None,
+        months: int | None = None,
     ) -> DistributionOut:
-        meta = self._meta(role, location, dataset_kind)
-        aggregate = self.repository.aggregate(role, location, dataset_kind)
+        effective_kind, synthetic_excluded = self._resolve_dataset_kind(
+            role, location, dataset_kind, industry, months
+        )
+        meta = self._meta(
+            role,
+            location,
+            effective_kind,
+            industry,
+            months,
+            synthetic_excluded=synthetic_excluded,
+        )
+        aggregate = self.repository.aggregate(
+            role, location, effective_kind, industry=industry, months=months
+        )
         items = self._counts(
-            self.repository.distribution(dimension, role, location, dataset_kind),
+            self.repository.distribution(
+                dimension,
+                role,
+                location,
+                effective_kind,
+                industry=industry,
+                months=months,
+            ),
             aggregate["total_jobs"],
         )
         return DistributionOut(dimension=dimension, items=items, meta=meta)
@@ -168,19 +249,53 @@ class MarketService:
         location: str | None = None,
         dataset_kind: Literal["all", "real", "synthetic"] = "all",
         months: int = 6,
+        industry: str | None = None,
     ) -> TrendOut:
-        meta = self._meta(role, location, dataset_kind)
-        points = self.repository.trends(role, location, dataset_kind, months)
-        insufficient = meta.sample_size < MIN_SAMPLE or len(points) < 2
+        effective_kind, synthetic_excluded = self._resolve_dataset_kind(
+            role, location, dataset_kind, industry, months
+        )
+        meta = self._meta(
+            role,
+            location,
+            effective_kind,
+            industry,
+            months,
+            synthetic_excluded=synthetic_excluded,
+        )
+        points = self.repository.trends(
+            role, location, effective_kind, months, industry=industry
+        )
+        insufficient = meta.sample_size < MIN_SAMPLE or len(points) < 3
         return TrendOut(
             points=[] if insufficient else [TrendPoint(**point) for point in points],
             insufficient_data=insufficient,
             meta=meta,
         )
 
-    def roles(self, dataset_kind: Literal["all", "real", "synthetic"] = "all") -> RolesOut:
-        meta = self._meta(None, None, dataset_kind)
-        return RolesOut(items=self.repository.roles(dataset_kind), meta=meta)
+    def roles(
+        self,
+        dataset_kind: Literal["all", "real", "synthetic"] = "all",
+        *,
+        industry: str | None = None,
+        months: int | None = None,
+    ) -> RolesOut:
+        effective_kind, synthetic_excluded = self._resolve_dataset_kind(
+            None, None, dataset_kind, industry, months
+        )
+        meta = self._meta(
+            None,
+            None,
+            effective_kind,
+            industry,
+            months,
+            synthetic_excluded=synthetic_excluded,
+        )
+        return RolesOut(
+            items=self.repository.roles(
+                effective_kind, industry=industry, months=months
+            ),
+            meta=meta,
+        )
 
     def sources(self) -> SourcesOut:
         return SourcesOut(
@@ -191,9 +306,15 @@ class MarketService:
         )
 
     def get_market_insights(
-        self, role: str | None = None, location: str | None = None
+        self,
+        role: str | None = None,
+        location: str | None = None,
+        industry: str | None = None,
+        months: int | None = None,
     ) -> dict[str, Any]:
-        overview = self.overview(role=role, location=location)
+        overview = self.overview(
+            role=role, location=location, industry=industry, months=months
+        )
         return overview.model_dump(mode="json")
 
     def get_skill_demand(
@@ -212,11 +333,49 @@ class MarketService:
             "experience": experience.model_dump(mode="json"),
         }
 
+    def _resolve_dataset_kind(
+        self,
+        role: str | None,
+        location: str | None,
+        dataset_kind: str,
+        industry: str | None,
+        months: int | None,
+    ) -> tuple[str, bool]:
+        """Resolve `all` to a clean real-first dataset.
+
+        Real and synthetic rows must never be summed into one market sample.
+        If any matching real rows exist, use real only and report that the
+        synthetic demo rows were excluded. If no real rows exist, keep the
+        existing synthetic demo path.
+        """
+        if dataset_kind in {"real", "synthetic"}:
+            return dataset_kind, False
+        real_count = self.repository.aggregate(
+            role, location, "real", industry=industry, months=months
+        )["total_jobs"]
+        if real_count:
+            synthetic_count = self.repository.aggregate(
+                role, location, "synthetic", industry=industry, months=months
+            )["total_jobs"]
+            return "real", synthetic_count > 0
+        return "synthetic", False
+
     def _meta(
-        self, role: str | None, location: str | None, dataset_kind: str
+        self,
+        role: str | None,
+        location: str | None,
+        dataset_kind: str,
+        industry: str | None = None,
+        months: int | None = None,
+        *,
+        synthetic_excluded: bool = False,
     ) -> MarketMeta:
-        aggregate = self.repository.aggregate(role, location, dataset_kind)
-        sources = self.repository.matching_sources(role, location, dataset_kind)
+        aggregate = self.repository.aggregate(
+            role, location, dataset_kind, industry=industry, months=months
+        )
+        sources = self.repository.matching_sources(
+            role, location, dataset_kind, industry=industry, months=months
+        )
         sample_size = aggregate["total_jobs"]
         kinds = sorted({source["dataset_kind"] for source in sources})
         warnings = []
@@ -224,6 +383,10 @@ class MarketService:
             warnings.append("暂无匹配市场数据")
         elif sample_size < MIN_SAMPLE:
             warnings.append("样本量不足 5 条，不得视为全国市场结论")
+        if synthetic_excluded:
+            warnings.append(
+                "已优先使用真实岗位数据；synthetic 演示数据未混入真实统计。"
+            )
         if "synthetic" in kinds:
             warnings.append("包含合成测试数据，仅用于链路验证，不代表真实招聘市场")
         return MarketMeta(

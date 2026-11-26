@@ -1,7 +1,4 @@
-import { expect, fileUser, test, userHeaders, type Page } from './fixtures'
-
-const USER = fileUser('layout')
-test.use({ extraHTTPHeaders: { 'X-User-Id': USER } })
+import { expect, useUser, type Page } from './fixtures'
 
 const PROFILE = {
   basic: {
@@ -40,32 +37,26 @@ const PROFILE = {
   ],
 }
 
-test.beforeAll(async ({ request }) => {
-  const headers = userHeaders(USER)
-  const profile = await request.put('/api/profile', {
-    data: { data: PROFILE },
-    headers,
+const test = useUser('layout', async (session) => {
+  const profile = await session.api.put('/api/profile', {
+    data: PROFILE,
   })
   expect(profile.ok()).toBeTruthy()
 
-  const current = await request.get('/api/roadmap/current', { headers })
+  const current = await session.api.get('/api/roadmap/current')
   expect(current.ok()).toBeTruthy()
   const currentBody = (await current.json()) as {
     data: { roadmap: { id: string } | null }
   }
   if (currentBody.data.roadmap) return
 
-  const generated = await request.post('/api/roadmap/generate', {
-    data: {},
-    headers,
-  })
+  const generated = await session.api.post('/api/roadmap/generate', {})
   expect(generated.ok()).toBeTruthy()
   const generatedBody = (await generated.json()) as {
     data: { id: string }
   }
-  const confirmed = await request.post(
+  const confirmed = await session.api.post(
     `/api/roadmap/${generatedBody.data.id}/confirm`,
-    { headers },
   )
   expect(confirmed.ok()).toBeTruthy()
 })
@@ -114,7 +105,7 @@ async function assertNaturalScroll(page: Page) {
 
 test('profile page scrolls naturally from the page body', async ({ page }) => {
   await page.goto('/profile')
-  await expect(page.getByRole('heading', { level: 2, name: /Profile/ })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 1, name: /Profile/ })).toBeVisible()
   await expect(page.getByRole('heading', { name: '基本信息' })).toBeVisible()
   await page.waitForLoadState('networkidle')
   await assertNaturalScroll(page)
@@ -136,10 +127,10 @@ test('roadmap page scrolls naturally from the page body', async ({ page }) => {
 
 test('dashboard renders the single focus card without fake metrics', async ({
   page,
-  request,
+  session,
 }) => {
   await page.goto('/dashboard')
-  await expect(page.getByRole('heading', { level: 2, name: /Dashboard/ })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 1, name: /Dashboard/ })).toBeVisible()
   await expect(page.locator('.dash-focus')).toBeVisible()
   await expect(page.locator('.dash-metric-ring')).toContainText('%')
   await expect(page.locator('.dash-metric-link')).toHaveAttribute(
@@ -147,9 +138,7 @@ test('dashboard renders the single focus card without fake metrics', async ({
     /\/profile/,
   )
 
-  const gapResponse = await request.get('/api/roadmap/gap', {
-    headers: userHeaders(USER),
-  })
+  const gapResponse = await session.api.get('/api/roadmap/gap')
   const gapBody = (await gapResponse.json()) as {
     data: { to_improve: unknown[] }
   }
@@ -173,7 +162,7 @@ test('dashboard never shows 0% or missing target while loading', async ({
     await route.continue()
   })
   await page.goto('/dashboard')
-  await expect(page.getByRole('heading', { level: 2, name: /Dashboard/ })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 1, name: /Dashboard/ })).toBeVisible()
   await expect(page.locator('.page-lede .skeleton')).toBeVisible()
   await expect(page.locator('.dash-metric-ring')).toHaveCount(0)
   await expect(page.locator('body')).not.toContainText('目标岗位待设置')
@@ -186,7 +175,7 @@ test('dashboard never shows 0% or missing target while loading', async ({
 test('chat keeps the message list as the only scroll region', async ({ page }) => {
   await page.goto('/chat')
   await expect(
-    page.getByRole('heading', { level: 2, name: /AI Career Advisor/ }),
+    page.getByRole('heading', { level: 1, name: /AI Career Advisor/ }),
   ).toBeVisible()
 
   const input = page.getByLabel('消息输入框')

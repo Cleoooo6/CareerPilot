@@ -17,7 +17,7 @@ def test_alembic_version_is_head(migrated_db):
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT version_num FROM alembic_version")
-            assert cur.fetchone()[0] == "0006_roadmap_concurrency"
+            assert cur.fetchone()[0] == "0011_auth_accounts"
 
 
 def test_stage_three_tables_exist(migrated_db):
@@ -231,3 +231,123 @@ def test_jsonb_defaults(migrated_db):
                 "AND column_name = 'metadata'"
             )
             assert "jsonb" in str(cur.fetchone()[0])
+
+
+def test_industry_pulse_tables_exist(migrated_db):
+    expected = {
+        "industry_feed_source",
+        "industry_pulse_article",
+        "industry_pulse_run",
+    }
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'public'"
+            )
+            tables = {row[0] for row in cur.fetchall()}
+    assert expected.issubset(tables)
+
+
+def test_industry_taxonomy_v2_columns_and_constraints(migrated_db):
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT column_name, is_nullable FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'industry_pulse_article' "
+                "AND column_name IN ('industry', 'primary_industry', 'relevance_status', "
+                "'classification_basis', 'legacy_industry', 'taxonomy_version')"
+            )
+            article_columns = {name: nullable for name, nullable in cur.fetchall()}
+            assert article_columns["industry"] == "YES"
+            assert article_columns["primary_industry"] == "YES"
+            assert article_columns["relevance_status"] == "NO"
+            assert article_columns["classification_basis"] == "NO"
+            assert article_columns["legacy_industry"] == "YES"
+            assert article_columns["taxonomy_version"] == "NO"
+
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'industry_feed_source'"
+            )
+            source_columns = {row[0] for row in cur.fetchall()}
+            assert {"legacy_industry", "taxonomy_version"}.issubset(source_columns)
+
+            cur.execute(
+                "SELECT conname FROM pg_constraint "
+                "WHERE conrelid = 'industry_pulse_article'::regclass"
+            )
+            constraints = {row[0] for row in cur.fetchall()}
+            assert "ck_industry_pulse_article_relevance_status" in constraints
+
+            cur.execute(
+                "SELECT indexname FROM pg_indexes "
+                "WHERE tablename = 'industry_pulse_article'"
+            )
+            indexes = {row[0] for row in cur.fetchall()}
+            assert "ix_industry_pulse_article_relevance_region_published" in indexes
+            assert "ix_industry_pulse_article_taxonomy_version" in indexes
+
+
+def test_0011_auth_accounts_schema(migrated_db):
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'public'"
+            )
+            tables = {row[0] for row in cur.fetchall()}
+            assert {"auth_session", "auth_token"}.issubset(tables)
+
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'app_user'"
+            )
+            columns = {row[0] for row in cur.fetchall()}
+            assert {
+                "email",
+                "password_hash",
+                "status",
+                "email_verified_at",
+                "is_demo",
+                "updated_at",
+            }.issubset(columns)
+
+            cur.execute(
+                "SELECT indexname FROM pg_indexes WHERE tablename = 'app_user'"
+            )
+            indexes = {row[0] for row in cur.fetchall()}
+            assert "uq_app_user_email_lower" in indexes
+
+            cur.execute(
+                "SELECT conname FROM pg_constraint "
+                "WHERE conrelid = 'auth_session'::regclass"
+            )
+            assert any("auth_session" in name for name in {r[0] for r in cur.fetchall()})
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT column_name, column_default, is_nullable "
+                "FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name='industry_pulse_article' "
+                "AND column_name IN ('industry','primary_industry',"
+                "'legacy_primary_industry','legacy_industries')"
+            )
+            columns = {
+                name: (default, nullable)
+                for name, default, nullable in cur.fetchall()
+            }
+            assert columns["industry"][0] is None
+            assert columns["primary_industry"][0] is None
+            assert columns["industry"][1] == "YES"
+            assert columns["primary_industry"][1] == "YES"
+            assert columns["legacy_primary_industry"][1] == "YES"
+            assert columns["legacy_industries"][1] == "YES"
+
+            cur.execute(
+                "SELECT conname FROM pg_constraint "
+                "WHERE conrelid = 'industry_pulse_article'::regclass"
+            )
+            constraints = {row[0] for row in cur.fetchall()}
+            assert "ck_industry_pulse_article_primary_in_industries" in constraints
+            assert "ck_industry_pulse_article_industries_array" in constraints

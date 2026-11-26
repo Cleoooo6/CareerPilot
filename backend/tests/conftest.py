@@ -23,6 +23,9 @@ os.environ["TEST_DATABASE_URL"] = _TEST_URL
 os.environ["APP_ENV"] = "test"
 os.environ["LLM_MODE"] = "mock"
 os.environ["LLM_API_KEY"] = ""
+# Explicit test-only identity/transport compatibility for the isolated harness.
+os.environ["AUTH_TEST_MODE"] = "true"
+os.environ["AUTH_COOKIE_SECURE"] = "false"
 
 from app.core.config import get_settings  # noqa: E402
 
@@ -58,7 +61,9 @@ def clean_db(migrated_db: None) -> None:
                 "TRUNCATE roadmap_task, roadmap_stage, career_roadmap, "
                 "profile_revision, market_job, market_import_batch, "
                 "market_source, profile_analysis, resume_parse, career_profile, "
-                "agent_trace, agent_run, message, conversation, app_user "
+                "agent_trace, agent_run, message, conversation, app_user, "
+                "auth_session, auth_token, "
+                "industry_pulse_article, industry_pulse_run, industry_feed_source "
                 "RESTART IDENTITY CASCADE"
             )
 

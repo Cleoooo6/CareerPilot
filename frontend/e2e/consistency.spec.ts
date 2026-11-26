@@ -1,7 +1,4 @@
-import { expect, fileUser, test, userHeaders } from './fixtures'
-
-const USER = fileUser('consistency')
-test.use({ extraHTTPHeaders: { 'X-User-Id': USER } })
+import { expect, useUser } from './fixtures'
 
 const PROFILE = {
   basic: {
@@ -38,27 +35,21 @@ const PROFILE = {
   experiences: [],
 }
 
-test.beforeAll(async ({ request }) => {
-  const headers = userHeaders(USER)
-  const profile = await request.put('/api/profile', {
-    data: { data: PROFILE },
-    headers,
+const test = useUser('consistency', async (session) => {
+  const profile = await session.api.put('/api/profile', {
+    data: PROFILE,
   })
   expect(profile.ok()).toBeTruthy()
 
-  const current = await request.get('/api/roadmap/current', { headers })
+  const current = await session.api.get('/api/roadmap/current')
   const currentBody = (await current.json()) as {
     data: { roadmap: { id: string } | null }
   }
   if (!currentBody.data.roadmap) {
-    const generated = await request.post('/api/roadmap/generate', {
-      data: {},
-      headers,
-    })
+    const generated = await session.api.post('/api/roadmap/generate', {})
     const body = (await generated.json()) as { data: { id: string } }
-    const confirmed = await request.post(
+    const confirmed = await session.api.post(
       `/api/roadmap/${body.data.id}/confirm`,
-      { headers },
     )
     expect(confirmed.ok()).toBeTruthy()
   }
@@ -66,21 +57,18 @@ test.beforeAll(async ({ request }) => {
 
 test('Profile and Roadmap share the same gap totals, share and labels', async ({
   page,
-  request,
+  session,
 }) => {
   const pageErrors: string[] = []
   page.on('pageerror', (error) => pageErrors.push(error.message))
 
-  const marketResponse = await request.get(
+  const marketResponse = await session.api.get(
     '/api/market/skills?role=数据分析师&limit=20',
-    { headers: userHeaders(USER) },
   )
   const market = (await marketResponse.json()) as {
     data: { items: Array<{ skill: string; count: number; share: number }> }
   }
-  const gapResponse = await request.get('/api/roadmap/gap', {
-    headers: userHeaders(USER),
-  })
+  const gapResponse = await session.api.get('/api/roadmap/gap')
   const gap = (await gapResponse.json()) as {
     data: {
       matched: unknown[]
@@ -109,12 +97,14 @@ test('Profile and Roadmap share the same gap totals, share and labels', async ({
   await page.goto('/roadmap')
   const gapCard = page.getByTestId('roadmap-gap')
   const expand = gapCard.locator('button.link-button')
-  if (await expand.count()) {
+  if (total > 6) {
+    await expect(expand).toBeVisible()
     await expect(expand).toContainText(`展开全部 ${total} 项`)
     await expand.click()
     await expect(expand).toHaveText('收起')
   }
-  await expect(gapCard.locator('.gap-table tbody tr')).toHaveCount(total)
+  await expect(gapCard.locator('.gap-table')).toHaveAttribute('data-expanded', 'true')
+  await expect(gapCard.locator('.gap-table tbody tr:visible')).toHaveCount(total)
   const pythonRow = gapCard
     .locator('.gap-table tbody tr')
     .filter({ hasText: 'Python' })

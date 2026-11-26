@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 
 import ErrorNotice from '@/components/ErrorNotice.vue'
@@ -121,6 +121,17 @@ const currentStageId = computed(() => {
   )
   return active?.id ?? roadmap.stages[roadmap.stages.length - 1].id
 })
+const activeStage = computed(
+  () =>
+    current.value?.stages.find((stage) => stage.id === currentStageId.value) ??
+    null,
+)
+const focusTask = computed(
+  () =>
+    currentTasks.value.find((task) => task.status === 'in_progress') ??
+    currentTasks.value.find((task) => task.status === 'pending') ??
+    null,
+)
 const gapRows = computed<GapRow[]>(() => {
   const result = gap.value
   if (!result) return []
@@ -138,9 +149,6 @@ const gapRows = computed<GapRow[]>(() => {
       left.name.localeCompare(right.name),
   )
 })
-const visibleGapRows = computed(() =>
-  gapExpanded.value ? gapRows.value : gapRows.value.slice(0, 6),
-)
 const nextVersion = computed(() => (current.value?.version ?? 0) + 1)
 
 function errorMessage(value: unknown): string {
@@ -201,12 +209,42 @@ function toggleStage(stageId: string) {
     expandedStageId.value === stageId ? '' : stageId
 }
 
-function openHistory() {
+const drawerRef = ref<HTMLElement | null>(null)
+let drawerReturnFocus: HTMLElement | null = null
+
+async function openHistory() {
+  drawerReturnFocus = document.activeElement as HTMLElement | null
   historyOpen.value = true
+  await nextTick()
+  drawerRef.value?.querySelector<HTMLElement>('button')?.focus()
 }
 
 function closeHistory() {
+  if (!historyOpen.value) return
   historyOpen.value = false
+  void nextTick(() => drawerReturnFocus?.focus())
+}
+
+function onDrawerKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeHistory()
+    return
+  }
+  if (event.key !== 'Tab') return
+  const focusables = drawerRef.value?.querySelectorAll<HTMLElement>(
+    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+  )
+  if (!focusables?.length) return
+  const first = focusables[0]
+  const last = focusables[focusables.length - 1]
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
 }
 
 async function loadGap() {
@@ -406,7 +444,7 @@ onMounted(() => {
   <section class="page roadmap-page">
     <header class="page-head roadmap-v2-head">
       <div class="page-head-copy">
-        <h2>My Roadmap <span class="page-title-cn">成长路线</span></h2>
+        <h1>My Roadmap <span class="page-title-cn">成长路线</span></h1>
         <p class="page-lede">
           <template v-if="current">
             目标 {{ current.target_role }} · 当前版本 v{{ current.version }}
@@ -433,7 +471,7 @@ onMounted(() => {
         </button>
         <button
           type="button"
-          class="link-button"
+          class="button secondary small"
           data-testid="roadmap-history"
           @click="openHistory"
         >
@@ -454,7 +492,8 @@ onMounted(() => {
     <PageSkeleton v-if="loading" variant="roadmap" />
 
     <template v-else>
-      <section class="gap-card card" data-testid="roadmap-gap">
+      <div class="roadmap-top">
+        <section class="gap-card card" data-testid="roadmap-gap">
         <div class="gap-card-head">
           <div>
             <p class="section-label">能力差距</p>
@@ -476,7 +515,12 @@ onMounted(() => {
             <span>来源 {{ gapSources || '未记录' }}</span>
           </div>
           <p v-if="gapNote" class="market-warning">{{ gapNote }}</p>
-          <table v-if="gapRows.length" class="gap-table">
+          <table
+            v-if="gapRows.length"
+            class="gap-table"
+            :data-expanded="String(gapExpanded)"
+            :data-total="gapRows.length"
+          >
             <thead>
               <tr>
                 <th>技能</th>
@@ -485,9 +529,24 @@ onMounted(() => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="item in visibleGapRows" :key="`${item.status}-${item.name}`">
+              <tr
+                v-for="(item, index) in gapRows"
+                v-show="gapExpanded || index < 6"
+                :key="`${item.status}-${item.name}`"
+              >
                 <td :title="userFacingText(item.reason)">{{ item.name }}</td>
-                <td>{{ Math.round(item.market_share * 100) }}%</td>
+                <td class="gap-share-cell">
+                  <span class="gap-share">
+                    <span
+                      class="gap-share-bar"
+                      :style="{ width: `${Math.round(item.market_share * 100)}%` }"
+                      aria-hidden="true"
+                    ></span>
+                    <span class="gap-share-value">
+                      {{ Math.round(item.market_share * 100) }}%
+                    </span>
+                  </span>
+                </td>
                 <td>
                   <span class="tag" :class="gapStatusClass(item.status)">
                     {{ gapStatusLabel(item.status) }}
@@ -510,8 +569,38 @@ onMounted(() => {
             资料已确认不等于客观验证；没有记录不等于不具备。
           </p>
         </template>
-        <p v-else class="note">正在读取市场数据…</p>
+        <p v-else class="note state-loading" role="status">
+          正在读取市场数据…
+        </p>
       </section>
+
+        <aside class="roadmap-focus card" aria-label="当前阶段">
+          <p class="section-label">Current stage</p>
+          <h3>{{ activeStage?.title || '尚未开始' }}</h3>
+          <p class="note">
+            {{ activeStage?.goal || '先确认目标岗位，再生成路线。' }}
+          </p>
+          <div
+            class="roadmap-focus-progress"
+            role="progressbar"
+            :aria-valuenow="currentPercent"
+            aria-valuemin="0"
+            aria-valuemax="100"
+          >
+            <span :style="{ width: `${currentPercent}%` }"></span>
+          </div>
+          <p class="quiet-note">
+            路线进度 {{ currentPercent }}% · {{ taskCounts.completed }}/{{ totalTasks }}
+            任务
+          </p>
+          <div v-if="focusTask" class="roadmap-focus-next">
+            <span class="section-label">Next move</span>
+            <strong>{{ focusTask.title }}</strong>
+            <p class="note">{{ focusTask.description }}</p>
+          </div>
+          <p v-else class="note">暂无待推进任务。</p>
+        </aside>
+      </div>
 
       <section class="route-block" data-testid="roadmap-current">
         <div class="route-hero">
@@ -720,10 +809,17 @@ onMounted(() => {
       class="drawer-backdrop"
       @click.self="closeHistory"
     >
-      <aside class="drawer" aria-label="历史版本">
+      <aside
+        ref="drawerRef"
+        class="drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="roadmap-history-title"
+        @keydown="onDrawerKeydown"
+      >
         <div class="drawer-head">
           <div>
-            <h3>历史版本</h3>
+            <h3 id="roadmap-history-title">历史版本</h3>
             <p class="note">只读保留，不覆盖当前路线。</p>
             <p class="note">
               版本号按生成顺序递增；已放弃草稿不会出现在历史列表，因此编号可能跳号。

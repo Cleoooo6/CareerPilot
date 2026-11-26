@@ -1,7 +1,6 @@
-import { expect, fileUser, test } from './fixtures'
+import { expect, useUser } from './fixtures'
 
-const USER = fileUser('chat')
-test.use({ extraHTTPHeaders: { 'X-User-Id': USER } })
+const test = useUser('chat')
 
 test('chat workbench streams through real API and SSE', async ({ page }) => {
   const pageErrors: string[] = []
@@ -9,7 +8,7 @@ test('chat workbench streams through real API and SSE', async ({ page }) => {
 
   await page.goto('/chat')
   await expect(
-    page.getByRole('heading', { level: 2, name: /AI Career Advisor/ }),
+    page.getByRole('heading', { level: 1, name: /AI Career Advisor/ }),
   ).toBeVisible()
   await expect(page.locator('.chat-empty')).toBeVisible()
   await expect(page.locator('.chat-head-actions .tag')).toHaveText('演示模式', {

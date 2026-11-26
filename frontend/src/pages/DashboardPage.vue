@@ -119,7 +119,7 @@ onMounted(load)
   <section class="page dashboard-page">
     <header class="page-head">
       <div class="page-head-copy">
-        <h2>Dashboard <span class="page-title-cn">职业发展总览</span></h2>
+        <h1>Dashboard <span class="page-title-cn">职业发展总览</span></h1>
         <p v-if="loading" class="page-lede">
           <span class="skeleton skeleton-line md" style="display: block"></span>
         </p>
@@ -222,25 +222,31 @@ onMounted(load)
             <RouterLink to="/roadmap" class="link-button">查看全部</RouterLink>
           </div>
           <template v-if="displayTasks.length">
-            <div
+            <RouterLink
               v-for="task in displayTasks"
               :key="task.id"
+              to="/roadmap"
               class="dash-task"
             >
               <span
-                class="dash-task-mark"
+                class="dash-task-dot"
                 :class="{ 'is-done': task.status === 'completed' }"
+                aria-hidden="true"
               ></span>
               <div class="dash-task-copy">
                 <strong>{{ task.title }}</strong>
-                <span>{{ taskMeta(task) }}</span>
+                <span>
+                  {{ taskMeta(task) }} ·
+                  {{ task.status === 'completed' ? '已完成' : '待推进' }}
+                </span>
               </div>
-            </div>
+              <span class="dash-task-arrow" aria-hidden="true">→</span>
+            </RouterLink>
           </template>
           <p v-else class="note">还没有待推进的任务。</p>
         </section>
 
-        <div style="display: flex; flex-direction: column; gap: 18px">
+        <div class="dash-side">
           <section class="dash-card card">
             <div class="dash-card-head">
               <div>

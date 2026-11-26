@@ -1,6 +1,7 @@
 """模型与工具元信息（不发起真实模型调用）。"""
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.api.deps import AuthContext, get_auth_context
 from app.core.llm import LLMClient
 from app.core.logging import current_request_id
 from app.schemas.chat import LLMStatusOut, ToolListOut, ToolOut
@@ -11,7 +12,9 @@ router = APIRouter(tags=["meta"])
 
 
 @router.get("/llm/status", response_model=ApiResponse[LLMStatusOut])
-def llm_status() -> ApiResponse[LLMStatusOut]:
+def llm_status(
+    _: AuthContext = Depends(get_auth_context),
+) -> ApiResponse[LLMStatusOut]:
     status = LLMClient().status()
     return ApiResponse(
         data=LLMStatusOut.model_validate(status),
@@ -20,7 +23,9 @@ def llm_status() -> ApiResponse[LLMStatusOut]:
 
 
 @router.get("/tools", response_model=ApiResponse[ToolListOut])
-def list_tools() -> ApiResponse[ToolListOut]:
+def list_tools(
+    _: AuthContext = Depends(get_auth_context),
+) -> ApiResponse[ToolListOut]:
     registry = build_default_registry()
     registered = [
         ToolOut(
