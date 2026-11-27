@@ -14,6 +14,8 @@ import {
   getProfile,
   listAnalyses,
   listProfileRevisions,
+  listResumes,
+  reparseResume,
   saveProfile,
   uploadResume,
 } from '@/api/profile'
@@ -54,7 +56,7 @@ const TABS = [
   { id: 'skills', en: 'Skills & Interests', cn: '能力与兴趣' },
   { id: 'market', en: 'Market Match', cn: '市场匹配' },
   { id: 'growth', en: 'Growth Record', cn: '成长记录' },
-  { id: 'manage', en: 'Manage Profile', cn: '资料管理' },
+  { id: 'manage', en: 'Resume & Records', cn: '简历与资料' },
 ] as const
 
 type TabId = (typeof TABS)[number]['id']
@@ -84,6 +86,8 @@ const gapLoading = ref(false)
 
 const selectedFile = ref<File | null>(null)
 const resume = ref<ResumeParseOut | null>(null)
+const resumes = ref<ResumeParseOut[]>([])
+const resumeListLoading = ref(false)
 const resumeDraft = ref<ProfileData>(emptyProfileData())
 const selectedSections = ref<ProfileSection[]>(
   PROFILE_SECTIONS.map(([value]) => value),
@@ -91,8 +95,16 @@ const selectedSections = ref<ProfileSection[]>(
 
 const activeTab = computed<TabId>(() => {
   const value = String(route.query.tab ?? '')
-  return TAB_IDS.includes(value as TabId) ? (value as TabId) : 'overview'
+  const tab = TAB_IDS.includes(value as TabId) ? (value as TabId) : 'overview'
+  // 无画像时仅开放总览与简历资料，避免空数据面板被直接链接打开。
+  if (!profile.value && tab !== 'manage') return 'overview'
+  return tab
 })
+const visibleTabs = computed(() =>
+  profile.value
+    ? TABS
+    : TABS.filter((tab) => tab.id === 'overview' || tab.id === 'manage'),
+)
 const hasProfile = computed(() => Boolean(profile.value))
 const analysis = computed(() => latestAnalysis(analyses.value))
 const targetRole = computed(
@@ -469,6 +481,56 @@ async function removeProfile() {
   }
 }
 
+function resumeStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    processing: '解析中',
+    pending_review: '待确认',
+    confirmed: '已导入',
+    failed: '解析失败',
+    discarded: '已放弃',
+  }
+  return labels[status] ?? status
+}
+
+function canReparse(item: ResumeParseOut): boolean {
+  return item.status === 'pending_review' || item.status === 'failed'
+}
+
+async function loadResumes() {
+  resumeListLoading.value = true
+  try {
+    resumes.value = (await listResumes()).items
+  } catch {
+    resumes.value = []
+  } finally {
+    resumeListLoading.value = false
+  }
+}
+
+async function reparse(id: string) {
+  error.value = ''
+  uploading.value = true
+  try {
+    const result = await reparseResume(id)
+    resume.value = result
+    resumeDraft.value = cloneData(result.parsed_data)
+    selectedSections.value = PROFILE_SECTIONS.map(([value]) => value)
+    toast.value = `已重新解析，请审核后导入 · ${timeLabel()}`
+    await loadResumes()
+  } catch (value) {
+    error.value = errorMessage(value)
+  } finally {
+    uploading.value = false
+  }
+}
+
+function onFileDrop(event: DragEvent) {
+  const file = event.dataTransfer?.files?.[0]
+  if (file) {
+    selectedFile.value = file
+  }
+}
+
 function onFileChange(event: Event) {
   const input = event.target as HTMLInputElement
   selectedFile.value = input.files?.[0] ?? null
@@ -484,6 +546,7 @@ async function upload() {
     resumeDraft.value = cloneData(result.parsed_data)
     selectedSections.value = PROFILE_SECTIONS.map(([value]) => value)
     toast.value = `简历已解析，请审核后导入 · ${timeLabel()}`
+    await loadResumes()
   } catch (value) {
     error.value = errorMessage(value)
     resume.value = null
@@ -545,7 +608,7 @@ async function analyze() {
   error.value = ''
   analyzing.value = true
   try {
-    const result = await analyzeProfile()
+    const result = await analyzeProfile(true)
     analyses.value = [result, ...analyses.value]
     selectedAnalysisId.value = result.id
     toast.value = `AI 职业分析已完成 · ${timeLabel()}`
@@ -559,6 +622,7 @@ async function analyze() {
 
 onMounted(() => {
   void loadPage()
+  void loadResumes()
 })
 </script>
 
@@ -609,51 +673,54 @@ onMounted(() => {
         @retry="loadPage"
       />
 
-      <template v-if="!profile">
-        <div class="state-card">
-          <h3>建立你的第一份职业画像</h3>
-          <p>从基本信息、技能和一段经历开始，之后逐步补充证据。</p>
-        </div>
-        <section class="card profile-v2-card" style="margin-top: 18px">
-          <div class="profile-v2-card-head">
-            <div>
-              <h3>补充资料</h3>
-              <p>保存即确认，并记录第一个资料版本。</p>
-            </div>
-            <button
-              type="button"
-              class="button primary"
-              :disabled="saving"
-              @click="save"
-            >
-              {{ saving ? '正在保存' : '保存画像' }}
-            </button>
+      <div class="profile-v2-tabs" role="tablist" aria-label="职业画像标签">
+        <button
+          v-for="tab in visibleTabs"
+          :key="tab.id"
+          type="button"
+          class="profile-v2-tab"
+          :class="{ 'is-active': activeTab === tab.id }"
+          role="tab"
+          :aria-selected="activeTab === tab.id"
+          :tabindex="activeTab === tab.id ? 0 : -1"
+          :data-tab-id="tab.id"
+          @click="setTab(tab.id)"
+          @keydown="onTabKeydown($event, tab.id)"
+        >
+          <strong>{{ tab.en }}</strong>
+          <span>{{ tab.cn }}</span>
+        </button>
+      </div>
+
+      <div v-if="activeTab === 'overview'" class="profile-v2-body">
+        <template v-if="!profile">
+          <div class="state-card">
+            <h3>建立你的第一份职业画像</h3>
+            <p>上传一份简历让 AI 解析，或从基本信息、技能和一段经历开始填写。</p>
           </div>
-          <ProfileEditor v-model="draft" collapsible />
-        </section>
-      </template>
+          <section class="card profile-v2-card" style="margin-top: 18px">
+            <div class="profile-v2-card-head">
+              <div>
+                <h3>补充资料</h3>
+                <p>保存即确认，并记录第一个资料版本。</p>
+              </div>
+              <button
+                type="button"
+                class="button primary"
+                :disabled="saving"
+                @click="save"
+              >
+                {{ saving ? '正在保存' : '保存画像' }}
+              </button>
+            </div>
+            <ProfileEditor v-model="draft" collapsible />
+          </section>
+          <p class="note" style="margin-top: 12px">
+            已有简历？切换到上方「简历与资料」上传 PDF / DOCX，解析后可确认导入画像。
+          </p>
+        </template>
 
-      <template v-else>
-        <div class="profile-v2-tabs" role="tablist" aria-label="职业画像标签">
-          <button
-            v-for="tab in TABS"
-            :key="tab.id"
-            type="button"
-            class="profile-v2-tab"
-            :class="{ 'is-active': activeTab === tab.id }"
-            role="tab"
-            :aria-selected="activeTab === tab.id"
-            :tabindex="activeTab === tab.id ? 0 : -1"
-            :data-tab-id="tab.id"
-            @click="setTab(tab.id)"
-            @keydown="onTabKeydown($event, tab.id)"
-          >
-            <strong>{{ tab.en }}</strong>
-            <span>{{ tab.cn }}</span>
-          </button>
-        </div>
-
-        <div v-if="activeTab === 'overview'" class="profile-v2-body">
+        <template v-else>
           <section class="card profile-v2-card">
             <div class="profile-v2-card-head">
               <div>
@@ -766,6 +833,7 @@ onMounted(() => {
             </div>
             <p v-else class="note">尚无版本记录；保存画像后开始记录。</p>
           </section>
+        </template>
         </div>
 
         <div v-else-if="activeTab === 'skills'" class="profile-v2-body">
@@ -1089,7 +1157,7 @@ onMounted(() => {
           </section>
 
           <section class="card profile-v2-card">
-            <details>
+            <details open>
               <summary class="profile-subsection-summary">
                 <h3>简历导入</h3>
                 <span class="quiet-note">解析后需确认</span>
@@ -1097,7 +1165,11 @@ onMounted(() => {
               <p class="note">
                 支持 PDF / DOCX，解析结果需要你确认后才会进入画像。
               </p>
-              <div class="upload-box">
+              <div
+                class="upload-box"
+                @dragover.prevent
+                @drop.prevent="onFileDrop"
+              >
                 <label class="field">
                   <span>虚构测试简历文件（≤10MB）</span>
                   <input
@@ -1161,6 +1233,38 @@ onMounted(() => {
                 </div>
               </div>
               <p v-else class="note">还没有待审核解析结果。</p>
+
+              <div class="resume-history">
+                <h4>简历记录</h4>
+                <p v-if="resumeListLoading" class="note">正在读取简历记录…</p>
+                <template v-else-if="resumes.length">
+                  <div
+                    v-for="item in resumes"
+                    :key="item.id"
+                    class="resume-history-row"
+                  >
+                    <div>
+                      <strong>{{ item.original_filename }}</strong>
+                      <span class="tag tag-muted">
+                        {{ resumeStatusLabel(item.status) }}
+                      </span>
+                      <span v-if="item.error_type" class="resume-warning">
+                        {{ item.error_message || '解析失败，可重新解析' }}
+                      </span>
+                    </div>
+                    <button
+                      v-if="canReparse(item)"
+                      type="button"
+                      class="button ghost small"
+                      :disabled="uploading"
+                      @click="reparse(item.id)"
+                    >
+                      重新解析
+                    </button>
+                  </div>
+                </template>
+                <p v-else class="note">还没有上传记录。</p>
+              </div>
             </details>
           </section>
 
@@ -1193,12 +1297,24 @@ onMounted(() => {
                     @click="selectedAnalysisId = item.id"
                   >
                     <span>{{ formatDate(item.created_at) }}</span>
-                    <small>{{ analysisHistoryLabel(item) }}</small>
+                    <small>
+                      {{ analysisHistoryLabel(item) }}
+                      <template v-if="item.stale"> · 可能过期</template>
+                    </small>
                   </button>
                 </aside>
                 <article class="analysis-detail">
                   <div class="analysis-meta">
                     <span class="tag tag-inference">AI 推断 · 待确认</span>
+                    <span v-if="selectedAnalysis.stale" class="tag tag-inference">
+                      资料已更新 · 分析可能过期
+                    </span>
+                    <span
+                      v-if="selectedAnalysis.source_revision_version"
+                      class="tag tag-muted"
+                    >
+                      资料 v{{ selectedAnalysis.source_revision_version }}
+                    </span>
                     <time>{{ formatDate(selectedAnalysis.created_at) }}</time>
                   </div>
                   <section class="analysis-section">
@@ -1325,7 +1441,7 @@ onMounted(() => {
             </div>
           </section>
         </div>
-      </template>
+
     </template>
 
     <ToastNotice v-if="toast" :message="toast" @close="toast = ''" />

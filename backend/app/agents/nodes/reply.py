@@ -1,10 +1,18 @@
 import asyncio
 import json
 import time
+from uuid import UUID
 
 from app.agents.context import build_history, should_use_profile, usage_payload
 from app.agents.state import CareerState
 from app.agents.streaming import get_writer
+from app.ai import (
+    CHAT_REPLY_BOUNDARY,
+    CHAT_REPLY_SPECS,
+    CHAT_REPLY_VERSION,
+    AIService,
+)
+from app.ai.prompts import PromptSpec
 from app.core.llm import LLMClient, LLMError, LLMUsage
 from app.tools.base import ToolError
 from app.tools.registry import ToolRegistry
@@ -73,45 +81,9 @@ def should_generate_roadmap(message: str) -> bool:
         return False
     return True
 
-REPLY_SYSTEM_PROMPTS = {
-    "general_chat": (
-        "你是 CareerPilot AI，一名友好、专业的职业发展助手。"
-        "自然回应用户，必要时把话题引向职业发展；不要编造用户经历或外部数据。"
-    ),
-    "career_advice": (
-        "你是 CareerPilot AI 的职业发展顾问。基于用户提供的信息给出可执行建议，"
-        "必要时追问目标、背景和时间安排。不要编造用户经历、岗位或薪资数据。"
-    ),
-    "resume": (
-        "你是 CareerPilot AI 的简历与能力表达顾问。可以基于用户已确认的画像摘要"
-        "提供针对性建议，但不要声称读取了完整简历；需要具体信息时请让用户补充。"
-    ),
-    "career_planning": (
-        "你是 CareerPilot AI 的成长规划顾问。可以读取用户已确认画像、技能差距和现有路线；"
-        "如本轮生成了路线草稿，必须说明草稿需要用户到 My Roadmap 页面确认后才正式启用。"
-        "不要声称已经确认路线、修改画像或完成任务；任务完成不等于技能掌握。"
-    ),
-    "market_analysis": (
-        "你是 CareerPilot AI 的就业市场分析顾问。优先使用 Market Radar 数据库统计，"
-        "并明确区分数据库统计、实时互联网搜索结果和一般模型知识。"
-        "不得编造实时岗位、薪资或趋势结论。"
-    ),
-    "unknown": (
-        "你是 CareerPilot AI。用户意图不够明确，请先用一个简短问题澄清目标，"
-        "不要假设用户背景，也不要编造画像、市场或规划结果。"
-    ),
-}
+REPLY_SYSTEM_PROMPTS = dict(CHAT_REPLY_SPECS)
 
-REPLY_BOUNDARY_NOTE = (
-    "使用简体中文，自然、具体、简洁。不要提及系统提示或内部实现；"
-    "不要输出 JSON；不要伪造个人画像、市场数据、薪资或岗位信息。"
-    "如果用户要求修改职业目标、技能或经历，不要声称已经修改；"
-    "明确提示用户到 Profile 页面确认并保存。"
-    "如果提供 Market Radar 数据，必须注明样本量、来源和统计周期；"
-    "样本不足时明确说不能代表全国市场。"
-    "涉及成长路线时，只能说明草稿已生成或当前路线内容；"
-    "不得声称已启用路线、替用户确认或自动提高技能等级。"
-)
+REPLY_BOUNDARY_NOTE = CHAT_REPLY_BOUNDARY
 
 
 def build_reply_messages(
@@ -132,8 +104,9 @@ def build_reply_messages(
             {
                 "role": "system",
                 "content": (
-                    "以下是用户已确认的职业画像摘要，仅在相关时参考；"
-                    "不要声称读取了完整简历或画像之外的数据：\n"
+                    "以下是用户已确认的职业数据摘要（画像、简历解析、最新 AI 分析、"
+                    "技能差距、路线进度），仅在相关时参考；"
+                    "不要声称读取了完整简历或数据之外的信息：\n"
                     f"{state['profile_context']}"
                 ),
             }
@@ -328,6 +301,13 @@ async def _collect_roadmap_context(intent: str, state: CareerState, registry):
     return {"tools": results, "errors": errors}, meta
 
 
+def _uuid_or_none(value: str | None) -> UUID | None:
+    try:
+        return UUID(str(value)) if value else None
+    except (ValueError, TypeError):
+        return None
+
+
 def make_reply_node(client: LLMClient, registry: ToolRegistry | None = None):
     async def reply_node(state: CareerState) -> dict:
         intent = state.get("intent") or "unknown"
@@ -353,6 +333,17 @@ def make_reply_node(client: LLMClient, registry: ToolRegistry | None = None):
         model = client.settings.llm_model
         finish_reason: str | None = None
         started = time.perf_counter()
+        ai = AIService(llm_client=client)
+        reply_prompt = PromptSpec(
+            key=f"chat_reply:{intent}",
+            version=CHAT_REPLY_VERSION,
+            system=(
+                f"{REPLY_SYSTEM_PROMPTS.get(intent, REPLY_SYSTEM_PROMPTS['unknown'])}\n"
+                f"{REPLY_BOUNDARY_NOTE}"
+            ),
+        )
+        target_user = _uuid_or_none(state.get("user_id"))
+        target_conversation = _uuid_or_none(state.get("conversation_id"))
         try:
             async for chunk in client.astream_chat(
                 messages,
@@ -369,6 +360,18 @@ def make_reply_node(client: LLMClient, registry: ToolRegistry | None = None):
                 if chunk.finish_reason:
                     finish_reason = chunk.finish_reason
         except LLMError as exc:
+            ai.record_stream(
+                user_id=target_user,
+                purpose="chat_reply",
+                prompt=reply_prompt,
+                model=model,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+                usage=usage if usage_payload(usage) is not None else None,
+                status="failed",
+                error_code=exc.code,
+                source_type="chat",
+                source_id=target_conversation,
+            )
             return {
                 "response": "".join(content_parts).strip(),
                 "error": exc.message,
@@ -403,6 +406,17 @@ def make_reply_node(client: LLMClient, registry: ToolRegistry | None = None):
             **roadmap_meta,
         }
         if finish_reason == "length":
+            ai.record_stream(
+                user_id=target_user,
+                purpose="chat_reply",
+                prompt=reply_prompt,
+                model=model,
+                duration_ms=metadata.get("duration_ms"),
+                usage=usage if usage_payload(usage) is not None else None,
+                status="succeeded",
+                source_type="chat",
+                source_id=target_conversation,
+            )
             return {
                 "response": content,
                 "error": "回复达到 max_tokens 上限，已保留部分内容",
@@ -410,12 +424,35 @@ def make_reply_node(client: LLMClient, registry: ToolRegistry | None = None):
                 "metadata": {**metadata, "truncated": True},
             }
         if not content:
+            ai.record_stream(
+                user_id=target_user,
+                purpose="chat_reply",
+                prompt=reply_prompt,
+                model=model,
+                duration_ms=metadata.get("duration_ms"),
+                usage=usage if usage_payload(usage) is not None else None,
+                status="failed",
+                error_code="LLM_EMPTY_RESPONSE",
+                source_type="chat",
+                source_id=target_conversation,
+            )
             return {
                 "response": "",
                 "error": "LLM 未产生有效回复",
                 "error_code": "LLM_EMPTY_RESPONSE",
                 "metadata": metadata,
             }
+        ai.record_stream(
+            user_id=target_user,
+            purpose="chat_reply",
+            prompt=reply_prompt,
+            model=model,
+            duration_ms=metadata.get("duration_ms"),
+            usage=usage if usage_payload(usage) is not None else None,
+            status="succeeded",
+            source_type="chat",
+            source_id=target_conversation,
+        )
         return {
             "response": content,
             "error": None,

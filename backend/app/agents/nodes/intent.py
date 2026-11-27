@@ -1,10 +1,13 @@
 import asyncio
+import time
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, field_validator
 
 from app.agents.context import format_history, usage_payload
 from app.agents.state import CareerState
+from app.ai import CHAT_INTENT_SPEC, AIService
 from app.core.llm import LLMClient, LLMError, LLMSchemaError
 from app.core.logging import redact
 
@@ -51,15 +54,7 @@ _PLANNING_WORDS = ("规划", "路线", "计划", "学习路径", "转行", "阶�
 _MARKET_WORDS = ("行业", "趋势", "市场", "薪资", "岗位需求", "就业", "招聘")
 _ADVICE_WORDS = ("求职", "面试", "职业建议", "职业发展", "转岗", "跳槽", "选择工作")
 
-INTENT_SYSTEM_PROMPT = """你是 CareerPilot AI 的意图分类器，只做分类，不回答用户问题。
-允许的 intent 只能是以下之一：
-- general_chat：问候、闲聊、平台使用或非职业问题
-- career_advice：求职、面试、转岗、职业选择、职业发展建议
-- resume：简历、技能、经历、项目、个人能力画像相关
-- career_planning：学习计划、成长路线、阶段目标、转行计划
-- market_analysis：行业趋势、岗位需求、薪资、就业市场
-- unknown：信息不足，无法判断
-只输出 JSON 对象，格式为 {"intent":"..."}。不要输出解释、Markdown 或额外字段。"""
+INTENT_SYSTEM_PROMPT = CHAT_INTENT_SPEC.system
 
 
 class IntentResult(BaseModel):
@@ -96,6 +91,17 @@ def classify_intent(message: str) -> IntentName:
     return INTENT_GENERAL_CHAT
 
 
+def _uuid_or_none(value: str | None) -> UUID | None:
+    try:
+        return UUID(str(value)) if value else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _elapsed_ms(started: float) -> int:
+    return max(0, int((time.perf_counter() - started) * 1000))
+
+
 def make_intent_node(client: LLMClient):
     async def intent_node(state: CareerState) -> dict:
         message = state.get("user_message", "")
@@ -111,17 +117,37 @@ def make_intent_node(client: LLMClient):
             "provider": client.settings.llm_provider,
             "model": client.settings.llm_model,
         }
+        ai = AIService(llm_client=client)
+        target_user = _uuid_or_none(state.get("user_id"))
+        target_conversation = _uuid_or_none(state.get("conversation_id"))
+        started = time.perf_counter()
         try:
-            result = await asyncio.to_thread(
-                client.complete_structured_with_meta,
-                INTENT_SYSTEM_PROMPT,
-                user_prompt,
-                IntentResult,
+            result, meta = await asyncio.to_thread(
+                ai.structured,
+                user_id=target_user,
+                purpose="chat_intent",
+                prompt=CHAT_INTENT_SPEC,
+                user_prompt=user_prompt,
+                schema=IntentResult,
                 mock_payload=(
                     {"intent": fallback} if client.mode == "mock" else None
                 ),
+                source_type="chat",
+                source_id=target_conversation,
             )
         except LLMSchemaError as exc:
+            ai.record_stream(
+                user_id=target_user,
+                purpose="chat_intent",
+                prompt=CHAT_INTENT_SPEC,
+                model=client.settings.llm_model,
+                duration_ms=_elapsed_ms(started),
+                usage=None,
+                status="failed",
+                error_code=exc.code,
+                source_type="chat",
+                source_id=target_conversation,
+            )
             return {
                 "intent": fallback,
                 "context": {
@@ -139,6 +165,18 @@ def make_intent_node(client: LLMClient):
                 "error_code": None,
             }
         except LLMError as exc:
+            ai.record_stream(
+                user_id=target_user,
+                purpose="chat_intent",
+                prompt=CHAT_INTENT_SPEC,
+                model=client.settings.llm_model,
+                duration_ms=_elapsed_ms(started),
+                usage=None,
+                status="failed",
+                error_code=exc.code,
+                source_type="chat",
+                source_id=target_conversation,
+            )
             return {
                 "intent": INTENT_UNKNOWN,
                 "context": {
@@ -155,7 +193,7 @@ def make_intent_node(client: LLMClient):
                 "error_code": exc.code,
             }
 
-        intent = normalize_intent(result.value.intent)
+        intent = normalize_intent(result.intent)
         return {
             "intent": intent,
             "context": {
@@ -167,9 +205,9 @@ def make_intent_node(client: LLMClient):
                 **metadata,
                 "intent": intent,
                 "intent_source": "mock" if client.mode == "mock" else "llm",
-                "intent_model": result.model,
-                "intent_usage": usage_payload(result.usage),
-                "intent_finish_reason": result.finish_reason,
+                "intent_model": meta.model,
+                "intent_usage": usage_payload(meta.usage),
+                "intent_finish_reason": meta.finish_reason,
             },
             "error": None,
             "error_code": None,

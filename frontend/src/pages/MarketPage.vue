@@ -102,19 +102,17 @@ const pulseHelpId = ref<PulseIndustryFilter | null>(null)
 let pulseHelpTimer: number | null = null
 
 const meta = computed(() => overview.value?.meta)
-const datasetLabel = computed(() => {
-  const kinds = meta.value?.dataset_kinds ?? []
-  if (kinds.includes('real') && kinds.includes('synthetic')) return '真实 + 演示'
-  if (kinds.includes('real')) return '真实数据'
-  if (kinds.includes('synthetic')) return '演示数据'
-  return '无数据'
-})
-const datasetNote = computed(() => {
-  const kinds = meta.value?.dataset_kinds ?? []
-  return kinds.includes('synthetic')
-    ? '演示数据，仅用于体验，不代表真实招聘市场'
-    : ''
-})
+const hasRealData = computed(() =>
+  (meta.value?.dataset_kinds ?? []).includes('real'),
+)
+const datasetLabel = computed(() =>
+  hasRealData.value ? '真实数据' : '暂无真实数据',
+)
+const realSources = computed(() =>
+  (meta.value?.sources ?? []).filter(
+    (source) => source.dataset_kind !== 'synthetic',
+  ),
+)
 const sampleNote = computed(() =>
   meta.value && !meta.value.sample_sufficient ? '样本量较少，仅作参考' : '',
 )
@@ -600,7 +598,7 @@ onBeforeUnmount(() => {
             <a href="#market-evidence">证据与缺口</a>
           </nav>
 
-          <div class="market-meta">
+          <div v-if="overview.total_jobs > 0 && hasRealData" class="market-meta">
             <span class="badge">{{ datasetLabel }}</span>
             <span>样本 {{ meta.sample_size }} 条</span>
             <span>统计周期 {{ formatDate(meta.period_start) }}–{{ formatDate(meta.period_end) }}</span>
@@ -626,7 +624,10 @@ onBeforeUnmount(() => {
             </button>
           </div>
 
-          <div class="market-number-row">
+          <div
+            v-if="overview.total_jobs > 0 && hasRealData"
+            class="market-number-row"
+          >
             <div class="market-number card">
               <span>岗位样本</span>
               <strong class="stat-number">{{ overview.total_jobs }}</strong>
@@ -641,9 +642,15 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <div v-if="overview.total_jobs === 0" class="state-card" style="margin-top: 18px">
-            <h3>当前方向暂无市场数据</h3>
-            <p>换一个职业方向看看，或稍后再试。</p>
+          <div
+            v-if="overview.total_jobs === 0 || !hasRealData"
+            class="state-card"
+            style="margin-top: 18px"
+          >
+            <h3>暂无真实市场数据</h3>
+            <p>
+              当前没有可验证的真实招聘样本；不会展示合成演示岗位或统计。
+            </p>
           </div>
 
           <template v-else>
@@ -867,7 +874,7 @@ onBeforeUnmount(() => {
               <span class="badge">{{ datasetLabel }}</span>
             </summary>
             <div
-              v-for="source in meta.sources"
+              v-for="source in realSources"
               :key="source.name"
               class="market-source"
             >

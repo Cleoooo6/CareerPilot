@@ -99,6 +99,15 @@ async def update_roadmap_task(
     return ApiResponse(data=result, request_id=current_request_id())
 
 
+@router.post("/{roadmap_id}/adjust", response_model=ApiResponse[RoadmapOut])
+async def adjust_roadmap(roadmap_id: UUID, user_id: str = Depends(get_user_id)):
+    service = get_roadmap_service()
+    roadmap, _reused = await service.adjust_draft(
+        await _user_id(user_id), roadmap_id
+    )
+    return ApiResponse(data=roadmap, request_id=current_request_id())
+
+
 @router.get("/{roadmap_id}", response_model=ApiResponse[RoadmapOut])
 async def get_roadmap(roadmap_id: UUID, user_id: str = Depends(get_user_id)):
     service = get_roadmap_service()

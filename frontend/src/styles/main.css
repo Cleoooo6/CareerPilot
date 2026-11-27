@@ -1422,6 +1422,44 @@ h4 {
   margin-top: 14px;
 }
 
+.resume-history {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.resume-history h4 {
+  margin: 0 0 10px;
+  font-size: var(--text-sm);
+}
+
+.resume-history-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-bottom: 8px;
+}
+
+.resume-history-row > div {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.resume-history-row strong {
+  font-size: var(--text-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 280px;
+}
+
 .analysis-layout {
   display: grid;
   grid-template-columns: 190px minmax(0, 1fr);

@@ -185,6 +185,9 @@ class ResumeParseOut(BaseModel):
     model: str
     parsed_data: ProfileData
     text_length: int
+    prompt_version: str | None = None
+    duration_ms: int | None = None
+    total_tokens: int | None = None
     error_type: str | None = None
     error_message: str | None = None
     created_at: datetime
@@ -230,6 +233,10 @@ class ProfileAnalysisResult(BaseModel):
     next_actions: list[str] = Field(default_factory=list)
 
 
+class ProfileAnalyzeRequest(BaseModel):
+    force: bool = False
+
+
 class ProfileAnalysisOut(BaseModel):
     id: UUID
     user_id: UUID
@@ -237,6 +244,13 @@ class ProfileAnalysisOut(BaseModel):
     provider: str
     model: str
     llm_mode: str
+    prompt_version: str = "profile_analysis@v1"
+    source_revision_version: int | None = None
+    resume_id: UUID | None = None
+    duration_ms: int | None = None
+    total_tokens: int | None = None
+    stale: bool = False
+    current_revision_version: int | None = None
     analysis: ProfileAnalysisResult
     created_at: datetime
 

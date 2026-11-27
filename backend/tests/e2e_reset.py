@@ -10,7 +10,7 @@ TEST_DB = "careerpilot_test"
 TABLES = (
     "roadmap_task, roadmap_stage, career_roadmap, "
     "profile_revision, market_job, market_import_batch, "
-    "market_source, profile_analysis, resume_parse, career_profile, "
+    "market_source, profile_analysis, resume_parse, ai_call_log, career_profile, "
     "agent_trace, agent_run, message, conversation, app_user, "
     "auth_session, auth_token, "
     "industry_pulse_article, industry_pulse_run, industry_feed_source"

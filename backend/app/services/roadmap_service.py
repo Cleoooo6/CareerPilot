@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import ValidationError
 
+from app.ai import ROADMAP_ADJUST_SPEC, ROADMAP_GENERATE_SPEC, AIService
 from app.core.errors import AppError, NotFoundError
 from app.core.llm import LLMClient, LLMError, get_llm_client
 from app.db.profile_repositories import profile_repository
@@ -30,17 +31,7 @@ from app.services.roadmap_gap import compute_skill_gap
 
 SKILL_DEMAND_LIMIT = 20
 
-ROADMAP_SYSTEM_PROMPT = """你是 CareerPilot AI 的个性化成长路线规划师。
-只基于给定的职业画像、技能差距和市场统计生成路线，不得编造用户经历、技能、证书或市场数字。
-
-要求：
-- 阶段有合理先后顺序，1-6 个阶段；每阶段 1-8 个任务；总任务 2-30 个。
-- 每个任务必须具体、可执行、可验收，给出清晰的验收标准；禁止空泛的“多练习”“多学习”。
-- 不得声称任务完成等于技能掌握；不得建议虚报熟练度。
-- 用户确认技能资料不等于客观能力验证；没有记录不等于不具备。
-- 市场统计来自 CareerPilot Market Radar 数据库，必须注明样本量、数据性质；synthetic 数据必须标注为合成数据，不能当作真实就业市场结论。
-- 若 basis=general（没有市场样本），只生成明确标注的通用建议，不得包装成市场需求。
-只输出 JSON 对象，字段符合 Schema；不要输出 Markdown、解释或额外字段。"""
+ROADMAP_SYSTEM_PROMPT = ROADMAP_GENERATE_SPEC.system
 
 
 def _profile_target_role(profile: dict[str, Any] | None) -> str:
@@ -316,10 +307,12 @@ class RoadmapService:
         repository: RoadmapRepository | None = None,
         llm_client: LLMClient | None = None,
         market_service: MarketService | None = None,
+        ai_service: AIService | None = None,
     ) -> None:
         self.repository = repository or roadmap_repository
         self.llm = llm_client or get_llm_client()
         self.market = market_service or get_market_service()
+        self.ai = ai_service or AIService(llm_client=self.llm)
 
     async def gap_for_user(
         self, user_id: UUID, target_role: str | None = None
@@ -367,19 +360,26 @@ class RoadmapService:
             ):
                 return self._serialize(latest), True
 
+        revision_version = await asyncio.to_thread(
+            profile_repository.latest_revision_version, user_id
+        )
         prompt = {
             "target_role": role,
             "profile": _profile_summary(profile),
             "skill_gap": gap.model_dump(mode="json"),
+            "profile_revision_version": revision_version,
         }
-        mock_payload = _mock_roadmap(role, gap)
+        mock_payload = _mock_roadmap(role, gap) if self.ai.mode == "mock" else None
         try:
-            result = await asyncio.to_thread(
-                self.llm.complete_structured_with_meta,
-                ROADMAP_SYSTEM_PROMPT,
-                json.dumps(prompt, ensure_ascii=False)[:12000],
-                RoadmapDraftLLM,
+            draft, meta = await asyncio.to_thread(
+                self.ai.structured,
+                user_id=user_id,
+                purpose="roadmap_generate",
+                prompt=ROADMAP_GENERATE_SPEC,
+                user_prompt=json.dumps(prompt, ensure_ascii=False)[:12000],
+                schema=RoadmapDraftLLM,
                 mock_payload=mock_payload,
+                source_type="roadmap_target",
             )
         except LLMError as exc:
             raise AppError(exc.code, exc.message, status_code=exc.status_code) from exc
@@ -389,7 +389,8 @@ class RoadmapService:
                 "生成路线未通过结构校验，请重试",
                 status_code=502,
             ) from exc
-        draft = result.value
+        snapshot = gap.model_dump(mode="json")
+        snapshot["profile_revision_version"] = revision_version
         try:
             roadmap_id, reused = await asyncio.to_thread(
                 self.repository.create_or_reuse,
@@ -400,10 +401,10 @@ class RoadmapService:
                 stages=[
                     stage.model_dump(mode="json") for stage in draft.stages
                 ],
-                gap_snapshot=gap.model_dump(mode="json"),
-                generation_mode=self.llm.mode,
-                provider=self.llm.settings.llm_provider,
-                model=result.model or self.llm.settings.llm_model,
+                gap_snapshot=snapshot,
+                generation_mode=meta.llm_mode,
+                provider=meta.provider,
+                model=meta.model,
                 fingerprint=fingerprint,
                 regenerate=regenerate,
             )
@@ -417,9 +418,194 @@ class RoadmapService:
             raise NotFoundError("用户不存在") from exc
         return await self._get_or_404(user_id, roadmap_id), reused
 
+    async def adjust_draft(
+        self, user_id: UUID, roadmap_id: UUID
+    ) -> tuple[RoadmapOut, bool]:
+        """Rebuild the plan from the latest profile/progress without losing work."""
+        active_row = await asyncio.to_thread(self.repository.get_active, user_id)
+        if active_row is None:
+            raise AppError(
+                "ROADMAP_NO_ACTIVE", "当前没有正式路线可调整", status_code=409
+            )
+        active = self._serialize(active_row)
+        if active.id != roadmap_id:
+            raise AppError(
+                "ROADMAP_NOT_ACTIVE", "只能调整当前正式路线", status_code=409
+            )
+        profile = await asyncio.to_thread(profile_repository.get_data, user_id)
+        role = active.target_role or _profile_target_role(profile)
+        gap = await self.gap_for_user(user_id, role)
+        revision_version = await asyncio.to_thread(
+            profile_repository.latest_revision_version, user_id
+        )
+        completed = [
+            {
+                "stage": stage.title,
+                "title": task.title,
+                "acceptance_criteria": task.acceptance_criteria,
+                "outcome": task.outcome,
+                "completed_at": (
+                    task.completed_at.isoformat() if task.completed_at else None
+                ),
+            }
+            for stage in active.stages
+            for task in stage.tasks
+            if task.status == "completed"
+        ]
+        prompt = {
+            "target_role": role,
+            "profile": _profile_summary(profile),
+            "skill_gap": gap.model_dump(mode="json"),
+            "current_roadmap": {
+                "version": active.version,
+                "title": active.title,
+                "summary": active.summary,
+                "progress": {
+                    "total": active.task_total,
+                    "completed": active.task_completed,
+                },
+                "stages": [
+                    {
+                        "title": stage.title,
+                        "goal": stage.goal,
+                        "tasks": [
+                            {
+                                "title": task.title,
+                                "status": task.status,
+                                "acceptance_criteria": task.acceptance_criteria,
+                            }
+                            for task in stage.tasks
+                        ],
+                    }
+                    for stage in active.stages
+                ],
+            },
+            "completed_tasks": completed,
+        }
+        mock_payload = _mock_roadmap(role, gap) if self.ai.mode == "mock" else None
+        try:
+            draft, meta = await asyncio.to_thread(
+                self.ai.structured,
+                user_id=user_id,
+                purpose="roadmap_adjust",
+                prompt=ROADMAP_ADJUST_SPEC,
+                user_prompt=json.dumps(prompt, ensure_ascii=False)[:16000],
+                schema=RoadmapDraftLLM,
+                mock_payload=mock_payload,
+                source_type="roadmap",
+                source_id=roadmap_id,
+            )
+        except LLMError as exc:
+            raise AppError(exc.code, exc.message, status_code=exc.status_code) from exc
+        except ValidationError as exc:
+            raise AppError(
+                "ROADMAP_INVALID_OUTPUT",
+                "调整后的路线未通过结构校验，请重试",
+                status_code=502,
+            ) from exc
+        stages = self._merge_completed_tasks(draft, completed)
+        snapshot = gap.model_dump(mode="json")
+        snapshot["profile_revision_version"] = revision_version
+        snapshot["adjustment_basis"] = {
+            "from_roadmap_id": str(roadmap_id),
+            "from_version": active.version,
+            "completed_tasks": [item["title"] for item in completed],
+            "reason": draft.summary[:500],
+        }
+        fingerprint = _gap_fingerprint(role, gap)
+        try:
+            new_id, _ = await asyncio.to_thread(
+                self.repository.create_or_reuse,
+                user_id,
+                target_role=role,
+                title=draft.title,
+                summary=draft.summary,
+                stages=stages,
+                gap_snapshot=snapshot,
+                generation_mode=meta.llm_mode,
+                provider=meta.provider,
+                model=meta.model,
+                fingerprint=fingerprint,
+                regenerate=True,
+            )
+        except RoadmapConflictError as exc:
+            raise AppError(
+                "ROADMAP_ADJUST_CONFLICT",
+                "调整发生并发冲突，请刷新后重试",
+                status_code=409,
+            ) from exc
+        except RoadmapUserNotFoundError as exc:
+            raise NotFoundError("用户不存在") from exc
+        return await self._get_or_404(user_id, new_id), False
+
+    @staticmethod
+    def _merge_completed_tasks(
+        draft: RoadmapDraftLLM, completed: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        stages = [stage.model_dump(mode="json") for stage in draft.stages]
+        for stage in stages:
+            stage.setdefault("tasks", [])
+        index = {
+            str(task.get("title") or "").strip().lower(): task
+            for stage in stages
+            for task in stage["tasks"]
+        }
+        for item in completed:
+            title = str(item.get("title") or "").strip()
+            if not title:
+                continue
+            key = title.lower()
+            target = index.get(key)
+            if target is None:
+                target = {
+                    "title": title,
+                    "description": item.get("acceptance_criteria") or "",
+                    "task_type": "learning",
+                    "priority": "medium",
+                    "estimated_time": "",
+                    "acceptance_criteria": item.get("acceptance_criteria") or "",
+                }
+                stages[0]["tasks"].append(target)
+                index[key] = target
+            target["status"] = "completed"
+            target["outcome"] = item.get("outcome") or target.get("outcome") or ""
+            target["completed_at"] = item.get("completed_at")
+        return stages
+
+    async def _stale_info(
+        self, row: dict[str, Any], user_id: UUID
+    ) -> tuple[bool | None, str | None]:
+        try:
+            profile = await asyncio.to_thread(profile_repository.get_data, user_id)
+            current_version = await asyncio.to_thread(
+                profile_repository.latest_revision_version, user_id
+            )
+        except Exception:
+            return None, None
+        snapshot = row.get("gap_snapshot") or {}
+        stored_version = snapshot.get("profile_revision_version")
+        reasons: list[str] = []
+        current_role = _profile_target_role(profile)
+        if current_role and current_role != row.get("target_role"):
+            reasons.append("target_role_changed")
+        if (
+            current_version is not None
+            and stored_version is not None
+            and current_version > int(stored_version)
+        ):
+            reasons.append("profile_updated")
+        if stored_version is None and not reasons:
+            return None, None
+        return bool(reasons), ",".join(reasons) or None
+
     async def get_current(self, user_id: UUID) -> RoadmapOut | None:
         row = await asyncio.to_thread(self.repository.get_active, user_id)
-        return self._serialize(row) if row else None
+        if row is None:
+            return None
+        stale, reason = await self._stale_info(row, user_id)
+        return self._serialize(row).model_copy(
+            update={"stale": stale, "stale_reason": reason}
+        )
 
     async def get_latest_draft(self, user_id: UUID) -> RoadmapOut | None:
         row = await asyncio.to_thread(self.repository.get_latest_draft, user_id)
@@ -443,7 +629,10 @@ class RoadmapService:
         )
         if row is None:
             raise NotFoundError("成长路线不存在")
-        return self._serialize(row)
+        stale, reason = await self._stale_info(row, user_id)
+        return self._serialize(row).model_copy(
+            update={"stale": stale, "stale_reason": reason}
+        )
 
     async def confirm(self, user_id: UUID, roadmap_id: UUID) -> RoadmapOut:
         row = await asyncio.to_thread(

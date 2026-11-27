@@ -49,7 +49,10 @@ tmp/
 # Local tooling and acceptance artifacts
 .codeartsdoer/
 .merkle-snapshot.json
-/docs/阶段检查报告.md# Internal milestone reports (kept local, never pushed)
+/docs/阶段检查报告.md
+# Internal milestone reports (kept local, never pushed)
 /docs/CareerPilot-Phase-AB-Implementation-Report.md
 /docs/CareerPilot-Production-Readiness-Audit.md
 /docs/CareerPilot-UIUX-ProMax-Design-Audit-2026-11-26.md
+# Local evaluation harness results (never pushed)
+/docs/eval/

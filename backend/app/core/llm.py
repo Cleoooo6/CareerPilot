@@ -55,9 +55,11 @@ class LLMRateLimitError(LLMRetryableError):
         *,
         retry_after: float | None = None,
         retry_exhausted: bool = False,
+        provider_code: str | None = None,
     ) -> None:
         super().__init__(message, retry_exhausted=retry_exhausted, status_code=429)
         self.retry_after = retry_after
+        self.provider_code = provider_code
 
 
 class LLMTimeoutError(LLMRetryableError):
@@ -70,13 +72,19 @@ class LLMServerError(LLMRetryableError):
 
 
 class LLMNonRetryableError(LLMError):
-    def __init__(self, message: str, *, status_code: int = 502) -> None:
-        super().__init__("LLM_NON_RETRYABLE_ERROR", message, status_code=status_code)
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "LLM_NON_RETRYABLE_ERROR",
+        status_code: int = 502,
+    ) -> None:
+        super().__init__(code, message, status_code=status_code)
 
 
 class LLMOutputTruncatedError(LLMNonRetryableError):
     def __init__(self, message: str = "LLM 输出被 max_tokens 截断") -> None:
-        super().__init__("LLM_OUTPUT_TRUNCATED", message)
+        super().__init__(message, code="LLM_OUTPUT_TRUNCATED")
 
 
 class LLMSchemaError(LLMError):
@@ -132,6 +140,22 @@ def _parse_retry_after(value: str | None) -> float | None:
         return max(0.0, float(value))
     except ValueError:
         return None
+
+
+def _provider_error_code(body_text: str) -> tuple[str | None, str | None]:
+    """Extract Zhipu-style business error code/message from an error body."""
+    try:
+        data = json.loads(body_text)
+    except (json.JSONDecodeError, TypeError):
+        return None, None
+    error = data.get("error") if isinstance(data, dict) else None
+    if not isinstance(error, dict):
+        return None, None
+    raw_code = error.get("code")
+    raw_message = error.get("message")
+    code = str(raw_code) if raw_code is not None else None
+    message = str(raw_message)[:200] if raw_message else None
+    return code, message
 
 
 class LLMClient:
@@ -361,9 +385,12 @@ class LLMClient:
             raise LLMRetryableError(f"LLM 网络错误：{redact(str(exc))}") from exc
 
         if response.status_code == 429:
+            code, detail = _provider_error_code(response.text[:2000])
+            suffix = f"（供应商错误码 {code}：{detail}）" if code else ""
             raise LLMRateLimitError(
-                "LLM 服务返回 HTTP 429 限流",
+                f"LLM 服务返回 HTTP 429 限流{suffix}",
                 retry_after=_parse_retry_after(response.headers.get("Retry-After")),
+                provider_code=code,
             )
         if 500 <= response.status_code <= 599:
             raise LLMServerError(f"LLM 服务返回 HTTP {response.status_code}")
@@ -422,9 +449,12 @@ class LLMClient:
         headers: httpx.Headers,
     ) -> None:
         if status_code == 429:
+            code, detail = _provider_error_code(body[:2000])
+            suffix = f"（供应商错误码 {code}：{detail}）" if code else ""
             raise LLMRateLimitError(
-                "LLM 服务返回 HTTP 429 限流",
+                f"LLM 服务返回 HTTP 429 限流{suffix}",
                 retry_after=_parse_retry_after(headers.get("Retry-After")),
+                provider_code=code,
             )
         if 500 <= status_code <= 599:
             raise LLMServerError(f"LLM 服务返回 HTTP {status_code}")

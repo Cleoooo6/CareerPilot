@@ -17,7 +17,7 @@ def test_alembic_version_is_head(migrated_db):
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT version_num FROM alembic_version")
-            assert cur.fetchone()[0] == "0011_auth_accounts"
+            assert cur.fetchone()[0] == "0012_ai_infrastructure"
 
 
 def test_stage_three_tables_exist(migrated_db):

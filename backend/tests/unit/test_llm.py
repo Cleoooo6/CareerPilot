@@ -284,3 +284,44 @@ async def test_stream_rate_limit_stops_refuses_retry():
                 pass
     finally:
         await async_http.aclose()
+
+def test_structured_payload_includes_zhipu_params():
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return _response('{"value": "ok"}')
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    settings = _settings(
+        llm_model="glm-5.3-flash",
+        llm_thinking="enabled",
+        llm_reasoning_effort="high",
+    )
+    client = LLMClient(settings=settings, http_client=http_client)
+    result = client.complete_structured_with_meta("系统提示", "用户输入", Demo)
+    payload = captured["payload"]
+    assert payload["model"] == "glm-5.3-flash"
+    assert payload["thinking"] == {"type": "enabled"}
+    assert payload["reasoning_effort"] == "high"
+    assert payload["response_format"] == {"type": "json_object"}
+    assert payload["stream"] is False
+    assert payload["max_tokens"] == settings.llm_max_tokens
+    assert result.value.value == "ok"
+    assert result.finish_reason == "stop"
+
+
+def test_structured_payload_omits_reasoning_effort_when_unset():
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return _response('{"value": "ok"}')
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    settings = _settings(llm_thinking="enabled", llm_reasoning_effort=None)
+    client = LLMClient(settings=settings, http_client=http_client)
+    client.complete_structured("系统提示", "用户输入", Demo)
+    payload = captured["payload"]
+    assert payload["thinking"] == {"type": "enabled"}
+    assert "reasoning_effort" not in payload

@@ -120,16 +120,25 @@ class ProfileRepository:
         model: str,
         llm_mode: str,
         analysis: dict[str, Any],
+        *,
+        prompt_version: str = "profile_analysis@v1",
+        source_revision_version: int | None = None,
+        resume_id: UUID | None = None,
+        duration_ms: int | None = None,
+        total_tokens: int | None = None,
     ) -> dict[str, Any]:
         with get_pool().connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(
                     """
                     INSERT INTO profile_analysis
-                        (id, user_id, profile_id, provider, model, llm_mode, analysis)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        (id, user_id, profile_id, provider, model, llm_mode, analysis,
+                         prompt_version, source_revision_version, resume_id,
+                         duration_ms, total_tokens)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id, user_id, profile_id, provider, model, llm_mode,
-                              analysis, created_at
+                              analysis, prompt_version, source_revision_version,
+                              resume_id, duration_ms, total_tokens, created_at
                     """,
                     (
                         uuid4(),
@@ -139,6 +148,11 @@ class ProfileRepository:
                         model,
                         llm_mode,
                         Jsonb(analysis),
+                        prompt_version,
+                        source_revision_version,
+                        resume_id,
+                        duration_ms,
+                        total_tokens,
                     ),
                 )
                 return cur.fetchone()
@@ -151,7 +165,8 @@ class ProfileRepository:
                 cur.execute(
                     """
                     SELECT id, user_id, profile_id, provider, model, llm_mode,
-                           analysis, created_at
+                           analysis, prompt_version, source_revision_version,
+                           resume_id, duration_ms, total_tokens, created_at
                     FROM profile_analysis
                     WHERE user_id = %s
                     ORDER BY created_at DESC
@@ -169,13 +184,46 @@ class ProfileRepository:
                 cur.execute(
                     """
                     SELECT id, user_id, profile_id, provider, model, llm_mode,
-                           analysis, created_at
+                           analysis, prompt_version, source_revision_version,
+                           resume_id, duration_ms, total_tokens, created_at
                     FROM profile_analysis
                     WHERE id = %s AND user_id = %s
                     """,
                     (analysis_id, user_id),
                 )
                 return cur.fetchone()
+
+    def latest_analysis(self, user_id: UUID) -> dict[str, Any] | None:
+        with get_pool().connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    """
+                    SELECT id, user_id, profile_id, provider, model, llm_mode,
+                           analysis, prompt_version, source_revision_version,
+                           resume_id, duration_ms, total_tokens, created_at
+                    FROM profile_analysis
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (user_id,),
+                )
+                return cur.fetchone()
+
+    def latest_revision_version(self, user_id: UUID) -> int | None:
+        with get_pool().connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    """
+                    SELECT version FROM profile_revision
+                    WHERE user_id = %s
+                    ORDER BY version DESC
+                    LIMIT 1
+                    """,
+                    (user_id,),
+                )
+                row = cur.fetchone()
+                return int(row["version"]) if row else None
 
 
 class ResumeRepository:
@@ -190,6 +238,7 @@ class ResumeRepository:
         parse_mode: str,
         provider: str,
         model: str,
+        content_hash: str | None = None,
     ) -> dict[str, Any]:
         with get_pool().connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
@@ -197,12 +246,13 @@ class ResumeRepository:
                     """
                     INSERT INTO resume_parse
                         (id, user_id, original_filename, stored_filename, file_size,
-                         mime_type, status, parse_mode, provider, model)
-                    VALUES (%s, %s, %s, %s, %s, %s, 'processing', %s, %s, %s)
+                         mime_type, status, parse_mode, provider, model, content_hash)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'processing', %s, %s, %s, %s)
                     RETURNING id, user_id, original_filename, stored_filename,
                               file_size, mime_type, status, parse_mode, provider,
                               model, parsed_data, text_length, error_type,
-                              error_message, created_at, updated_at
+                              error_message, content_hash, prompt_version,
+                              duration_ms, total_tokens, created_at, updated_at
                     """,
                     (
                         uuid4(),
@@ -214,7 +264,88 @@ class ResumeRepository:
                         parse_mode,
                         provider,
                         model,
+                        content_hash,
                     ),
+                )
+                return cur.fetchone()
+
+    def find_by_hash(
+        self, user_id: UUID, content_hash: str
+    ) -> dict[str, Any] | None:
+        with get_pool().connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    """
+                    SELECT id, user_id, original_filename, stored_filename, file_size,
+                           mime_type, status, parse_mode, provider, model,
+                           parsed_data, text_length, error_type, error_message,
+                           content_hash, prompt_version, duration_ms, total_tokens,
+                           created_at, updated_at
+                    FROM resume_parse
+                    WHERE user_id = %s AND content_hash = %s
+                    """,
+                    (user_id, content_hash),
+                )
+                return cur.fetchone()
+
+    def reset_for_reparse(
+        self,
+        user_id: UUID,
+        resume_id: UUID,
+        *,
+        stored_filename: str,
+        file_size: int,
+        mime_type: str,
+        parse_mode: str,
+        provider: str,
+        model: str,
+        content_hash: str,
+    ) -> dict[str, Any] | None:
+        with get_pool().connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    """
+                    UPDATE resume_parse
+                    SET stored_filename = %s, file_size = %s, mime_type = %s,
+                        parse_mode = %s, provider = %s, model = %s,
+                        content_hash = %s, status = 'processing',
+                        error_type = NULL, error_message = NULL, updated_at = NOW()
+                    WHERE id = %s AND user_id = %s
+                      AND status IN ('pending_review', 'failed', 'discarded')
+                    RETURNING id, user_id, original_filename, stored_filename,
+                              file_size, mime_type, status, parse_mode, provider,
+                              model, parsed_data, text_length, error_type,
+                              error_message, content_hash, prompt_version,
+                              duration_ms, total_tokens, created_at, updated_at
+                    """,
+                    (
+                        stored_filename,
+                        file_size,
+                        mime_type,
+                        parse_mode,
+                        provider,
+                        model,
+                        content_hash,
+                        resume_id,
+                        user_id,
+                    ),
+                )
+                return cur.fetchone()
+
+    def latest_confirmed(self, user_id: UUID) -> dict[str, Any] | None:
+        with get_pool().connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    """
+                    SELECT id, user_id, original_filename, status, parse_mode,
+                           provider, model, parsed_data, text_length,
+                           prompt_version, created_at, updated_at
+                    FROM resume_parse
+                    WHERE user_id = %s AND status = 'confirmed'
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (user_id,),
                 )
                 return cur.fetchone()
 
@@ -226,6 +357,7 @@ class ResumeRepository:
                     SELECT id, user_id, original_filename, stored_filename, file_size,
                            mime_type, status, parse_mode, provider, model,
                            parsed_data, text_length, error_type, error_message,
+                           content_hash, prompt_version, duration_ms, total_tokens,
                            created_at, updated_at
                     FROM resume_parse
                     WHERE id = %s AND user_id = %s
@@ -243,8 +375,8 @@ class ResumeRepository:
                     """
                     SELECT id, user_id, original_filename, file_size, mime_type,
                            status, parse_mode, provider, model, parsed_data,
-                           text_length, error_type, error_message,
-                           created_at, updated_at
+                           text_length, error_type, error_message, prompt_version,
+                           duration_ms, total_tokens, created_at, updated_at
                     FROM resume_parse
                     WHERE user_id = %s
                     ORDER BY created_at DESC
@@ -260,6 +392,10 @@ class ResumeRepository:
         resume_id: UUID,
         parsed_data: dict[str, Any],
         text_length: int,
+        *,
+        prompt_version: str | None = None,
+        duration_ms: int | None = None,
+        total_tokens: int | None = None,
     ) -> dict[str, Any] | None:
         with get_pool().connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
@@ -267,14 +403,24 @@ class ResumeRepository:
                     """
                     UPDATE resume_parse
                     SET parsed_data = %s, text_length = %s, status = 'pending_review',
+                        prompt_version = %s, duration_ms = %s, total_tokens = %s,
                         error_type = NULL, error_message = NULL, updated_at = NOW()
                     WHERE id = %s AND user_id = %s AND status = 'processing'
                     RETURNING id, user_id, original_filename, stored_filename,
                               file_size, mime_type, status, parse_mode, provider,
                               model, parsed_data, text_length, error_type,
-                              error_message, created_at, updated_at
+                              error_message, content_hash, prompt_version,
+                              duration_ms, total_tokens, created_at, updated_at
                     """,
-                    (Jsonb(parsed_data), text_length, resume_id, user_id),
+                    (
+                        Jsonb(parsed_data),
+                        text_length,
+                        prompt_version,
+                        duration_ms,
+                        total_tokens,
+                        resume_id,
+                        user_id,
+                    ),
                 )
                 return cur.fetchone()
 
@@ -291,7 +437,8 @@ class ResumeRepository:
                     RETURNING id, user_id, original_filename, stored_filename,
                               file_size, mime_type, status, parse_mode, provider,
                               model, parsed_data, text_length, error_type,
-                              error_message, created_at, updated_at
+                              error_message, content_hash, prompt_version,
+                              duration_ms, total_tokens, created_at, updated_at
                     """,
                     (Jsonb(parsed_data), resume_id, user_id),
                 )
@@ -325,7 +472,8 @@ class ResumeRepository:
                     RETURNING id, user_id, original_filename, stored_filename,
                               file_size, mime_type, status, parse_mode, provider,
                               model, parsed_data, text_length, error_type,
-                              error_message, created_at, updated_at
+                              error_message, content_hash, prompt_version,
+                              duration_ms, total_tokens, created_at, updated_at
                     """,
                     (status, resume_id, user_id),
                 )

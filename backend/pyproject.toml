@@ -39,6 +39,7 @@ addopts = "-ra"
 markers = [
     "integration: 需要真实 PostgreSQL 的测试（使用独立测试库）",
     "e2e: 需要完整服务栈的测试",
+    "unit: 不依赖 PostgreSQL 的纯单元测试",
 ]
 
 [tool.ruff]

@@ -6,6 +6,7 @@ import ErrorNotice from '@/components/ErrorNotice.vue'
 import PageSkeleton from '@/components/PageSkeleton.vue'
 import ToastNotice from '@/components/ToastNotice.vue'
 import {
+  adjustRoadmap,
   confirmRoadmap,
   discardRoadmap,
   generateRoadmap,
@@ -52,6 +53,7 @@ interface GapRow {
 const route = useRoute()
 const loading = ref(true)
 const generating = ref(false)
+const adjusting = ref(false)
 const confirming = ref(false)
 const discarding = ref(false)
 const updatingTask = ref('')
@@ -320,6 +322,30 @@ async function generate() {
     error.value = errorMessage(value)
   } finally {
     generating.value = false
+  }
+}
+
+async function adjustCurrent() {
+  if (!current.value || adjusting.value) return
+  if (
+    typeof window !== 'undefined' &&
+    !window.confirm(
+      '将基于最新画像与已完成任务生成调整草稿；正式路线会在你确认后替换。继续？',
+    )
+  ) {
+    return
+  }
+  error.value = ''
+  adjusting.value = true
+  try {
+    draft.value = await adjustRoadmap(current.value.id)
+    initOutcomes(draft.value)
+    toast.value = `调整草稿已就绪（已完成任务已保留）· ${timeLabel()}`
+    await loadDraft()
+  } catch (value) {
+    error.value = errorMessage(value)
+  } finally {
+    adjusting.value = false
   }
 }
 
@@ -620,6 +646,24 @@ onMounted(() => {
               还没有正式路线。先生成草稿，核对后确认启用。
             </p>
           </div>
+        </div>
+
+        <p v-if="current?.stale" class="market-warning">
+          画像或目标岗位已更新，当前路线可能过期；可基于最新进度生成调整草稿（已完成任务会保留）。
+        </p>
+        <div
+          v-if="current"
+          class="page-head-actions"
+          style="justify-content: flex-start"
+        >
+          <button
+            type="button"
+            class="button secondary"
+            :disabled="adjusting"
+            @click="adjustCurrent"
+          >
+            {{ adjusting ? '正在调整' : '根据最新进度调整' }}
+          </button>
         </div>
 
         <template v-if="current">

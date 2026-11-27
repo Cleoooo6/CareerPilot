@@ -94,6 +94,11 @@ class Settings(BaseSettings):
             and not self.auth_cookie_secure
         ):
             raise ValueError("HTTPS 部署必须启用 AUTH_COOKIE_SECURE")
+        if self.app_env == "production" and self.llm_mode != "real":
+            raise ValueError(
+                "生产环境必须使用真实 LLM（LLM_MODE=real）；"
+                "Mock 仅允许用于自动化测试"
+            )
         return self
 
     @property

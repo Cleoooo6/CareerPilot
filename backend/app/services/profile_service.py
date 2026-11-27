@@ -4,21 +4,15 @@ from typing import Any
 from uuid import UUID
 
 from app.agents.context import build_chat_profile_context
+from app.ai import PROFILE_ANALYSIS_SPEC, AIService
 from app.core.errors import AppError, NotFoundError
 from app.core.llm import LLMClient, LLMError, get_llm_client
-from app.db.profile_repositories import profile_repository
+from app.db.profile_repositories import profile_repository, resume_repository
 from app.db.repositories import user_repository
 from app.schemas.profile import ProfileAnalysisResult, ProfileData
 from app.services.profile_metadata import prepare_manual_skills
 
-PROFILE_ANALYSIS_SYSTEM_PROMPT = """你是 CareerPilot AI 的职业画像分析师。
-只基于用户已确认的职业画像进行分析，不得编造不存在的经历、技能、学历或成果。
-所有判断必须区分：
-- fact：画像中有明确事实依据；
-- inference：基于事实的推断，必须给出不确定性；
-- suggestion：面向下一步的建议。
-只输出 JSON 对象，字段必须符合给定 Schema。不要输出 Markdown 或额外字段。
-缺少证据时写入 missing_information，不要补造。"""
+PROFILE_ANALYSIS_SYSTEM_PROMPT = PROFILE_ANALYSIS_SPEC.system
 
 
 def profile_has_content(data: dict[str, Any] | None) -> bool:
@@ -89,8 +83,13 @@ def _mock_analysis(data: dict[str, Any]) -> dict[str, Any]:
 
 
 class ProfileService:
-    def __init__(self, llm_client: LLMClient | None = None) -> None:
+    def __init__(
+        self,
+        llm_client: LLMClient | None = None,
+        ai_service: AIService | None = None,
+    ) -> None:
         self.llm = llm_client or get_llm_client()
+        self.ai = ai_service or AIService(llm_client=self.llm)
 
     async def ensure_user_id(self, external_id: str) -> UUID:
         user = await asyncio.to_thread(user_repository.ensure_user, external_id)
@@ -116,7 +115,7 @@ class ProfileService:
         if not deleted:
             raise NotFoundError("职业画像不存在")
 
-    async def analyze(self, user_id: UUID) -> dict[str, Any]:
+    async def analyze(self, user_id: UUID, *, force: bool = False) -> dict[str, Any]:
         profile = await self.get_profile(user_id)
         if profile is None or not profile_has_content(profile.get("data")):
             raise AppError(
@@ -124,33 +123,68 @@ class ProfileService:
                 "请先完善并确认职业画像后再进行分析",
                 status_code=409,
             )
+        revision_version = await asyncio.to_thread(
+            profile_repository.latest_revision_version, user_id
+        )
+        if not force:
+            latest = await asyncio.to_thread(
+                profile_repository.latest_analysis, user_id
+            )
+            if (
+                latest is not None
+                and latest.get("source_revision_version") == revision_version
+                and latest.get("prompt_version")
+                == PROFILE_ANALYSIS_SPEC.version
+            ):
+                # Business-level idempotency: unchanged profile + same prompt
+                # version must not trigger a duplicate paid/free model call.
+                return self._decorate(latest, revision_version)
+
+        resume = await asyncio.to_thread(resume_repository.latest_confirmed, user_id)
+        resume_id = resume["id"] if resume else None
         data = profile["data"]
         profile_context = json.dumps(data, ensure_ascii=False)[:8000]
-        mock_payload = _mock_analysis(data) if self.llm.mode == "mock" else None
+        mock_payload = _mock_analysis(data) if self.ai.mode == "mock" else None
         try:
-            result = await asyncio.to_thread(
-                self.llm.complete_structured_with_meta,
-                PROFILE_ANALYSIS_SYSTEM_PROMPT,
-                f"已确认职业画像：\n{profile_context}",
-                ProfileAnalysisResult,
+            result, meta = await asyncio.to_thread(
+                self.ai.structured,
+                user_id=user_id,
+                purpose="profile_analysis",
+                prompt=PROFILE_ANALYSIS_SPEC,
+                user_prompt=f"已确认职业画像：\n{profile_context}",
+                schema=ProfileAnalysisResult,
                 mock_payload=mock_payload,
+                source_type="profile",
+                source_id=profile["id"],
             )
         except LLMError as exc:
             raise AppError(exc.code, exc.message, status_code=exc.status_code) from exc
 
-        analysis = result.value.model_dump(mode="json")
-        return await asyncio.to_thread(
+        analysis = result.model_dump(mode="json")
+        row = await asyncio.to_thread(
             profile_repository.create_analysis,
             user_id,
             profile["id"],
-            self.llm.settings.llm_provider,
-            result.model or self.llm.settings.llm_model,
-            self.llm.mode,
+            meta.provider,
+            meta.model,
+            meta.llm_mode,
             analysis,
+            prompt_version=meta.prompt_version,
+            source_revision_version=revision_version,
+            resume_id=resume_id,
+            duration_ms=meta.duration_ms,
+            total_tokens=meta.usage.total_tokens,
         )
+        return self._decorate(row, revision_version)
 
     async def list_analyses(self, user_id: UUID) -> list[dict[str, Any]]:
-        return await asyncio.to_thread(profile_repository.list_analyses, user_id)
+        current = await asyncio.to_thread(
+            profile_repository.latest_revision_version, user_id
+        )
+        rows = await asyncio.to_thread(
+            profile_repository.list_analyses, user_id
+        )
+        return [self._decorate(row, current) for row in rows]
 
     async def get_analysis(
         self, user_id: UUID, analysis_id: UUID
@@ -160,7 +194,23 @@ class ProfileService:
         )
         if analysis is None:
             raise NotFoundError("职业分析记录不存在")
-        return analysis
+        current = await asyncio.to_thread(
+            profile_repository.latest_revision_version, user_id
+        )
+        return self._decorate(analysis, current)
+
+    @staticmethod
+    def _decorate(
+        row: dict[str, Any], current_revision_version: int | None
+    ) -> dict[str, Any]:
+        payload = dict(row)
+        payload["stale"] = (
+            current_revision_version is not None
+            and int(row.get("source_revision_version") or 0)
+            < current_revision_version
+        )
+        payload["current_revision_version"] = current_revision_version
+        return payload
 
     async def list_revisions(self, user_id: UUID) -> list[dict[str, Any]]:
         return await asyncio.to_thread(profile_repository.list_revisions, user_id)

@@ -39,8 +39,11 @@ services:
       LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-2}
       LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-4096}
       LLM_TEMPERATURE: ${LLM_TEMPERATURE:-1.0}
+      RESUME_STORAGE_DIR: /app/var/resumes
     ports:
       - "8100:8000"
+    volumes:
+      - resume_data:/app/var/resumes
     depends_on:
       postgres:
         condition: service_healthy
@@ -76,6 +79,8 @@ services:
 volumes:
   pg_data:
     name: careerpilot_pg_data
+  resume_data:
+    name: careerpilot_resume_data
 
 
 networks:

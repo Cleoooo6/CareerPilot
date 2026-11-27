@@ -5,6 +5,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from app.agents.context import (
+    build_chat_career_context,
     build_chat_profile_context,
     build_history,
     should_use_profile,
@@ -15,12 +16,14 @@ from app.agents.state import initial_state
 from app.api.sse import EventEmitter
 from app.core.config import get_settings
 from app.core.errors import AppError, NotFoundError
-from app.db.profile_repositories import profile_repository
+from app.db.profile_repositories import profile_repository, resume_repository
 from app.db.repositories import (
     conversation_repository,
     message_repository,
     user_repository,
 )
+from app.db.roadmap_repositories import roadmap_repository
+from app.services.roadmap_service import get_roadmap_service
 from app.tracing.tracer import DatabaseTracer, Tracer
 
 logger = logging.getLogger(__name__)
@@ -127,12 +130,46 @@ class ChatService:
             max_chars=CONTEXT_CHAR_LIMIT,
         )
         profile_data = await asyncio.to_thread(profile_repository.get_data, user_id)
-        profile_context = build_chat_profile_context(profile_data)
         target_role = ""
         if profile_data:
             target_role = str(
                 (profile_data.get("goals") or {}).get("target_role") or ""
             )
+        resume_row = await asyncio.to_thread(
+            resume_repository.latest_confirmed, user_id
+        )
+        analysis_row = await asyncio.to_thread(
+            profile_repository.latest_analysis, user_id
+        )
+        current_version = await asyncio.to_thread(
+            profile_repository.latest_revision_version, user_id
+        )
+        analysis_stale = bool(
+            analysis_row
+            and current_version is not None
+            and int(analysis_row.get("source_revision_version") or 0)
+            < current_version
+        )
+        gap_payload = None
+        try:
+            gap = await get_roadmap_service().gap_for_user(
+                user_id, target_role or None
+            )
+            gap_payload = gap.model_dump(mode="json")
+        except Exception:
+            # Gap is optional context; chat must still work without a target role.
+            gap_payload = None
+        roadmap_row = await asyncio.to_thread(
+            roadmap_repository.get_active, user_id
+        )
+        profile_context = build_chat_career_context(
+            profile_context=build_chat_profile_context(profile_data),
+            resume=resume_row,
+            analysis=analysis_row,
+            analysis_stale=analysis_stale,
+            gap=gap_payload,
+            roadmap=roadmap_row,
+        )
 
         await asyncio.to_thread(
             message_repository.append, conversation_id, user_id, "user", content

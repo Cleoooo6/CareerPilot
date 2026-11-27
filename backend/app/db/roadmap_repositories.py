@@ -144,8 +144,8 @@ class RoadmapRepository:
                                 INSERT INTO roadmap_task
                                     (id, roadmap_id, stage_id, position, title,
                                      description, task_type, priority, estimated_time,
-                                     acceptance_criteria, status)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
+                                     acceptance_criteria, status, outcome, completed_at)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                                 """,
                                 (
                                     uuid4(),
@@ -158,6 +158,9 @@ class RoadmapRepository:
                                     task.get("priority") or "medium",
                                     task.get("estimated_time") or "",
                                     task.get("acceptance_criteria") or "",
+                                    task.get("status") or "pending",
+                                    task.get("outcome") or "",
+                                    task.get("completed_at"),
                                 ),
                             )
         except UniqueViolation as exc:

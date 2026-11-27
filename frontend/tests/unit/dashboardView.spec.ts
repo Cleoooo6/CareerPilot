@@ -6,7 +6,9 @@ import {
   currentStage,
   dashboardGreeting,
   formatDashboardDate,
+  hasRealMarketData,
   nextTasks,
+  pickMarketRole,
   profileCompletion,
   topCountTitle,
 } from '@/utils/dashboardView'
@@ -169,5 +171,23 @@ describe('dashboard view helpers', () => {
     } as Roadmap
     expect(currentStage(roadmap)?.id).toBe('s2')
     expect(currentStage(null)).toBeNull()
+  })
+
+  it('never falls back to a global role when the user has no target', () => {
+    const roles = [
+      { name: '前端工程师', count: 6, share: 0.25 },
+      { name: '数据分析师', count: 4, share: 0.17 },
+    ]
+    expect(pickMarketRole(roles, '', true)).toBeNull()
+    expect(pickMarketRole(roles, '数据分析师', true)?.count).toBe(4)
+    expect(pickMarketRole(roles, '产品经理', true)).toBeNull()
+    expect(pickMarketRole(roles, '数据分析师', false)).toBeNull()
+  })
+
+  it('only treats real datasets as displayable market data', () => {
+    expect(hasRealMarketData([])).toBe(false)
+    expect(hasRealMarketData(['synthetic'])).toBe(false)
+    expect(hasRealMarketData(['real'])).toBe(true)
+    expect(hasRealMarketData(['real', 'synthetic'])).toBe(true)
   })
 })

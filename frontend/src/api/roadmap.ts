@@ -57,6 +57,12 @@ export function discardRoadmap(roadmapId: string): Promise<unknown> {
   })
 }
 
+export function adjustRoadmap(roadmapId: string): Promise<Roadmap> {
+  return requestJson<Roadmap>(`/api/roadmap/${roadmapId}/adjust`, {
+    method: 'POST',
+  })
+}
+
 export function updateRoadmapTask(
   taskId: string,
   status: TaskStatus,

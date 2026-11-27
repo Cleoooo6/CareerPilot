@@ -64,9 +64,17 @@ export function discardResume(resumeId: string): Promise<ResumeParseOut> {
   })
 }
 
-export function analyzeProfile(): Promise<ProfileAnalysisOut> {
+export function reparseResume(resumeId: string): Promise<ResumeParseOut> {
+  return requestJson<ResumeParseOut>(
+    `/api/profile/resume/${resumeId}/reparse`,
+    { method: 'POST' },
+  )
+}
+
+export function analyzeProfile(force = false): Promise<ProfileAnalysisOut> {
   return requestJson<ProfileAnalysisOut>('/api/profile/analysis', {
     method: 'POST',
+    body: JSON.stringify({ force }),
   })
 }
 

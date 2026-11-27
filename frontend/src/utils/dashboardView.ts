@@ -1,3 +1,4 @@
+import type { MarketCountItem } from '@/types/market'
 import type { ProfileData } from '@/types/profile'
 import type { Roadmap, RoadmapStage, RoadmapTask } from '@/types/roadmap'
 
@@ -65,4 +66,18 @@ export function currentStage(roadmap: Roadmap | null): RoadmapStage | null {
       ),
     ) ?? roadmap.stages[roadmap.stages.length - 1]
   )
+}
+export function hasRealMarketData(datasetKinds: string[]): boolean {
+  return datasetKinds.includes('real')
+}
+
+export function pickMarketRole(
+  roles: MarketCountItem[],
+  targetRole: string,
+  hasRealData: boolean,
+): MarketCountItem | null {
+  const normalized = targetRole.trim()
+  // 没有用户目标岗位或没有真实样本时，绝不展示演示/全局热门岗位。
+  if (!normalized || !hasRealData) return null
+  return roles.find((item) => item.name === normalized) ?? null
 }

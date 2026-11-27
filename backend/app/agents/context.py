@@ -118,3 +118,113 @@ def build_chat_profile_context(
         if summaries:
             lines.append(f"{label}：" + "；".join(summaries))
     return "\n".join(lines)[:max_chars]
+
+def build_chat_career_context(
+    *,
+    profile_context: str,
+    resume: dict[str, Any] | None = None,
+    analysis: dict[str, Any] | None = None,
+    analysis_stale: bool = False,
+    gap: dict[str, Any] | None = None,
+    roadmap: dict[str, Any] | None = None,
+    max_chars: int = 2600,
+) -> str:
+    """Assemble the user's confirmed career data for the advisor.
+
+    Everything here comes from the current user's persisted records; the AI
+    must treat it as reference data, not instructions.
+    """
+    lines: list[str] = []
+    if profile_context:
+        lines.append("【已确认职业画像】")
+        lines.append(profile_context)
+
+    if resume:
+        parsed = resume.get("parsed_data") or {}
+        basic = parsed.get("basic") or {}
+        skills = [
+            str(item.get("name") or "")
+            for item in parsed.get("skills", [])
+            if item.get("name")
+        ]
+        parts = []
+        if basic.get("name"):
+            parts.append(f"姓名：{basic.get('name')}")
+        if skills:
+            parts.append(f"技能 {len(skills)} 项（{'、'.join(skills[:8])}）")
+        projects = len(parsed.get("projects") or [])
+        experiences = len(parsed.get("experiences") or [])
+        if projects:
+            parts.append(f"项目 {projects} 个")
+        if experiences:
+            parts.append(f"工作/实习 {experiences} 段")
+        if parts:
+            lines.append("【已确认简历解析】" + "；".join(parts))
+
+    if analysis:
+        payload = analysis.get("analysis") or {}
+        overview = str(payload.get("overview") or "").strip()
+        strengths = [
+            str(item.get("statement") or "").strip()
+            for item in payload.get("strengths", [])[:3]
+            if item.get("statement")
+        ]
+        gaps = [
+            str(item.get("statement") or "").strip()
+            for item in payload.get("gaps", [])[:3]
+            if item.get("statement")
+        ]
+        if overview or strengths or gaps:
+            header = "【最新 AI 职业分析"
+            header += "（资料已更新，分析可能过期）】" if analysis_stale else "】"
+            lines.append(header)
+            if overview:
+                lines.append(overview[:300])
+            if strengths:
+                lines.append("优势：" + "；".join(strengths)[:300])
+            if gaps:
+                lines.append("短板：" + "；".join(gaps)[:300])
+
+    if gap:
+        to_improve = [
+            str(item.get("name") or "")
+            for item in gap.get("to_improve", [])[:8]
+            if item.get("name")
+        ]
+        not_recorded = [
+            str(item.get("name") or "")
+            for item in gap.get("not_recorded", [])[:8]
+            if item.get("name")
+        ]
+        if to_improve or not_recorded:
+            lines.append("【技能差距（Market Radar 数据驱动）】")
+            if to_improve:
+                lines.append("需提升：" + "、".join(to_improve))
+            if not_recorded:
+                lines.append("尚无记录：" + "、".join(not_recorded))
+
+    if roadmap:
+        stages = roadmap.get("stages") or []
+        tasks = [
+            task for stage in stages for task in (stage.get("tasks") or [])
+        ]
+        completed = [
+            str(task.get("title") or "")
+            for task in tasks
+            if task.get("status") == "completed"
+        ]
+        pending = [
+            str(task.get("title") or "")
+            for task in tasks
+            if task.get("status") in ("pending", "in_progress")
+        ]
+        lines.append(
+            f"【当前正式路线】目标岗位：{roadmap.get('target_role') or '-'}；"
+            f"任务 {len(tasks)} 个，已完成 {len(completed)} 个"
+        )
+        if completed:
+            lines.append("已完成：" + "、".join(completed[:6]))
+        if pending:
+            lines.append("待推进：" + "、".join(pending[:6]))
+
+    return "\n".join(lines)[:max_chars]

@@ -11,8 +11,8 @@ from app.core.errors import AppError, NotFoundError
 from app.core.llm import LLMClient
 from app.db.industry_pulse_repositories import industry_pulse_repository
 from app.industry_pulse.classify import classify_article
-from app.industry_pulse.personalize import rank_personal_items
 from app.industry_pulse.parser import FeedParseError, parse_feed
+from app.industry_pulse.personalize import rank_personal_items
 from app.industry_pulse.sources import FEED_SOURCES, FeedSource
 from app.industry_pulse.taxonomy import INDUSTRIES, INDUSTRY_LABELS, MAJORS_NOTE
 from app.schemas.industry_pulse import IndustryPulseAnalysisOut

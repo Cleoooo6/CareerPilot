@@ -80,6 +80,8 @@ export interface Roadmap {
   stages: RoadmapStage[]
   task_total: number
   task_completed: number
+  stale: boolean | null
+  stale_reason: string | null
 }
 
 export interface RoadmapSummary {

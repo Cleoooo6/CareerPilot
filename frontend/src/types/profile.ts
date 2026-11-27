@@ -87,6 +87,9 @@ export interface ResumeParseOut {
   model: string
   parsed_data: ProfileData
   text_length: number
+  prompt_version: string | null
+  duration_ms: number | null
+  total_tokens: number | null
   error_type: string | null
   error_message: string | null
   created_at: string
@@ -126,6 +129,13 @@ export interface ProfileAnalysisOut {
   provider: string
   model: string
   llm_mode: string
+  prompt_version: string
+  source_revision_version: number | null
+  resume_id: string | null
+  duration_ms: number | null
+  total_tokens: number | null
+  stale: boolean
+  current_revision_version: number | null
   analysis: ProfileAnalysisResult
   created_at: string
 }

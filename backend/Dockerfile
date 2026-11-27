@@ -10,6 +10,9 @@ WORKDIR /app
 
 RUN addgroup --system app && adduser --system --ingroup app app
 
+# 简历文件持久化目录（由 compose 挂载 careerpilot_resume_data 卷）。
+RUN mkdir -p /app/var/resumes
+
 COPY pyproject.toml alembic.ini ./
 COPY app ./app
 COPY migrations ./migrations

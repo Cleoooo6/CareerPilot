@@ -9,6 +9,7 @@ from app.schemas.common import ApiResponse
 from app.schemas.profile import (
     ProfileAnalysisListOut,
     ProfileAnalysisOut,
+    ProfileAnalyzeRequest,
     ProfileOut,
     ProfileRevisionDetailOut,
     ProfileRevisionListOut,
@@ -152,6 +153,21 @@ async def update_resume(
     )
 
 
+@router.post(
+    "/resume/{resume_id}/reparse",
+    response_model=ApiResponse[ResumeParseOut],
+)
+async def reparse_resume(resume_id: UUID, user_id: str = Depends(get_user_id)):
+    service = get_resume_service()
+    row = await service.reparse(
+        await service.ensure_user_id(user_id), resume_id
+    )
+    return ApiResponse(
+        data=ResumeParseOut.model_validate(row),
+        request_id=current_request_id(),
+    )
+
+
 @router.post("/resume/{resume_id}/confirm", response_model=ApiResponse[ProfileOut])
 async def confirm_resume(
     resume_id: UUID,
@@ -184,9 +200,15 @@ async def discard_resume(resume_id: UUID, user_id: str = Depends(get_user_id)):
 
 
 @router.post("/analysis", response_model=ApiResponse[ProfileAnalysisOut])
-async def analyze_profile(user_id: str = Depends(get_user_id)):
+async def analyze_profile(
+    payload: ProfileAnalyzeRequest | None = None,
+    user_id: str = Depends(get_user_id),
+):
     service = get_profile_service()
-    row = await service.analyze(await service.ensure_user_id(user_id))
+    row = await service.analyze(
+        await service.ensure_user_id(user_id),
+        force=bool(payload.force) if payload else False,
+    )
     return ApiResponse(
         data=ProfileAnalysisOut.model_validate(row),
         request_id=current_request_id(),

@@ -39,35 +39,50 @@ watch(
 const navItems = [
   {
     to: '/dashboard',
+    path: '/dashboard',
+    tab: '',
     icon: 'dashboard' as const,
     en: 'Dashboard',
     cn: '职业发展总览',
   },
   {
     to: '/chat',
+    path: '/chat',
+    tab: '',
     icon: 'chat' as const,
     en: 'AI Career Advisor',
     cn: 'AI 职业顾问',
   },
   {
     to: '/profile',
+    path: '/profile',
+    tab: '',
     icon: 'profile' as const,
     en: 'Profile',
     cn: '职业画像',
   },
   {
+
     to: '/market',
+    path: '/market',
+    tab: '',
     icon: 'market' as const,
     en: 'Market Radar',
     cn: '市场洞察',
   },
   {
     to: '/roadmap',
+    path: '/roadmap',
+    tab: '',
     icon: 'roadmap' as const,
     en: 'My Roadmap',
     cn: '成长路线',
   },
 ]
+
+function isNavActive(item: { path: string; tab: string }): boolean {
+  return route.path === item.path
+}
 </script>
 
 <template>
@@ -86,11 +101,11 @@ const navItems = [
         <div class="nav-label">Workspace</div>
         <RouterLink
           v-for="item in navItems"
-          :key="item.to"
+          :key="`${item.path}-${item.tab || item.en}`"
           :to="item.to"
           class="nav-item"
-          active-class="is-active"
-          :aria-current="route.path === item.to ? 'page' : undefined"
+          :class="{ 'is-active': isNavActive(item) }"
+          :aria-current="isNavActive(item) ? 'page' : undefined"
         >
           <AppIcon :name="item.icon" :size="18" />
           <span class="nav-item-copy">

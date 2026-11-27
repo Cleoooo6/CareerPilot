@@ -144,6 +144,8 @@ class RoadmapOut(BaseModel):
     stages: list[RoadmapStageOut]
     task_total: int
     task_completed: int
+    stale: bool | None = None
+    stale_reason: str | None = None
 
 
 class RoadmapSummaryOut(BaseModel):

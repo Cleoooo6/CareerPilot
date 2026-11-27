@@ -15,7 +15,9 @@ import {
   currentStage,
   dashboardGreeting,
   formatDashboardDate,
+  hasRealMarketData,
   nextTasks,
+  pickMarketRole,
   profileCompletion,
   topCountTitle,
 } from '@/utils/dashboardView'
@@ -70,17 +72,17 @@ function taskMeta(task: RoadmapTask): string {
   if (task.estimated_time) parts.push(`预计 ${task.estimated_time}`)
   return parts.join(' · ') || task.description || '待补充说明'
 }
-const marketRole = computed(() => {
-  const roles = market.value?.top_roles ?? []
-  if (!roles.length) return null
-  return (
-    roles.find((item) => item.name === targetRole.value) ?? roles[0]
-  )
-})
-const marketSample = computed(() => market.value?.meta.sample_size ?? 0)
-const marketSynthetic = computed(
-  () => market.value?.meta.dataset_kinds.includes('synthetic') ?? false,
+const marketHasRealData = computed(() =>
+  hasRealMarketData(market.value?.meta.dataset_kinds ?? []),
 )
+const marketRole = computed(() =>
+  pickMarketRole(
+    market.value?.top_roles ?? [],
+    targetRole.value,
+    marketHasRealData.value,
+  ),
+)
+const marketSample = computed(() => market.value?.meta.sample_size ?? 0)
 
 function errorMessage(value: unknown): string {
   if (value instanceof ApiError) return value.message
@@ -200,8 +202,15 @@ onMounted(load)
         </template>
         <template v-else-if="!profile">
           <h3>先建立你的职业画像</h3>
-          <p>画像会决定差距判断与路线生成；从基本信息和目标开始。</p>
-          <RouterLink to="/profile" class="button primary">去建立画像</RouterLink>
+          <p>上传一份简历让 AI 解析，或从基本信息和目标开始填写。</p>
+          <div class="page-head-actions" style="justify-content: flex-start">
+            <RouterLink to="/profile?tab=manage" class="button primary">
+              上传简历
+            </RouterLink>
+            <RouterLink to="/profile" class="button secondary">
+              手动填写画像
+            </RouterLink>
+          </div>
         </template>
         <template v-else>
           <h3>下一步还没有排好</h3>
@@ -274,18 +283,32 @@ onMounted(load)
             <div class="dash-card-head">
               <div>
                 <h3>市场风向</h3>
-                <p class="note">与你目标方向相关的一条</p>
+                <p class="note">来自真实市场样本</p>
               </div>
               <RouterLink to="/market" class="link-button">去市场洞察</RouterLink>
             </div>
-            <div v-if="marketRole" class="dash-gap-row">
-              <span>{{ marketRole.name }}</span>
-              <RouterLink to="/market" class="link-button">{{ marketRole.count }} 条岗位</RouterLink>
-            </div>
-            <p v-else class="note">暂无市场样本。</p>
-            <p class="note">
-              样本 {{ marketSample }} 条{{ marketSynthetic ? ' · 合成演示数据' : '' }}
-            </p>
+            <template v-if="marketRole">
+              <div class="dash-gap-row">
+                <span>{{ marketRole.name }}</span>
+                <RouterLink to="/market" class="link-button">
+                  {{ marketRole.count }} 条岗位
+                </RouterLink>
+              </div>
+              <p class="note">样本 {{ marketSample }} 条</p>
+            </template>
+            <template v-else-if="!targetRole">
+              <p class="note">
+                还没有职业目标；完善目标后才会显示与你相关的市场数据。
+              </p>
+              <RouterLink to="/profile?tab=overview" class="link-button">
+                完善职业目标
+              </RouterLink>
+            </template>
+            <template v-else>
+              <p class="note">
+                暂无该方向的可验证真实市场样本，不展示演示数据。
+              </p>
+            </template>
           </section>
         </div>
       </div>
